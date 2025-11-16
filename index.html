@@ -1515,7 +1515,3356 @@
     </div>
 
     <script>
-/* ========================================
+
+        // SharePoint REST API Integration Module
+// Insert this before the platform initialization
+
+const SharePointAPI = {
+    siteUrl: '',
+    listsConfig: {
+        projects: 'Research_Projects',
+        publications: 'Publications',
+        irb: 'IRB_Protocols',
+        grants: 'Grants',
+        conferences: 'Conferences',
+        meetings: 'Meetings',
+        tasks: 'Tasks',
+        team: 'Team_Members',
+        projectDocuments: 'Project_Documents',
+        projectTasks: 'Project_Tasks',
+        milestones: 'Milestones',
+        resources: 'Resources'
+    },
+    isSharePointEnvironment: false,
+    connectionStatus: 'local', // 'local', 'sharepoint', 'error'
+
+    // Initialize and detect SharePoint
+    async init() {
+        try {
+            // Detect if running in SharePoint
+            if (window._spPageContextInfo) {
+                this.siteUrl = window._spPageContextInfo.webAbsoluteUrl;
+                this.isSharePointEnvironment = true;
+                console.log('SharePoint detected:', this.siteUrl);
+                
+                // Test connection
+                const testConnection = await this.testConnection();
+                if (testConnection) {
+                    this.connectionStatus = 'sharepoint';
+                    this.updateStatusIndicator('sharepoint');
+                    console.log('✅ SharePoint connection successful');
+                    return true;
+                } else {
+                    throw new Error('SharePoint connection test failed');
+                }
+            } else {
+                console.log('Not in SharePoint environment, using localStorage');
+                this.connectionStatus = 'local';
+                this.updateStatusIndicator('local');
+                return false;
+            }
+        } catch (error) {
+            console.error('SharePoint initialization error:', error);
+            this.connectionStatus = 'error';
+            this.updateStatusIndicator('error');
+            return false;
+        }
+    },
+
+    // Test SharePoint connection
+    async testConnection() {
+        try {
+            const response = await fetch(`${this.siteUrl}/_api/web`, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json;odata=verbose'
+                },
+                credentials: 'same-origin'
+            });
+            return response.ok;
+        } catch (error) {
+            console.error('Connection test failed:', error);
+            return false;
+        }
+    },
+
+    // Update status indicator in UI
+    updateStatusIndicator(status) {
+        const statusEl = document.querySelector('.sharepoint-status');
+        const indicatorEl = document.querySelector('.status-indicator');
+        const textEl = document.querySelector('.sharepoint-status span');
+        
+        if (!statusEl || !indicatorEl || !textEl) return;
+
+        indicatorEl.className = 'status-indicator';
+        
+        switch(status) {
+            case 'sharepoint':
+                indicatorEl.classList.add('connected');
+                indicatorEl.style.background = '#28a745';
+                textEl.textContent = 'SharePoint Connected';
+                break;
+            case 'local':
+                indicatorEl.classList.add('local');
+                indicatorEl.style.background = '#ffc107';
+                textEl.textContent = 'Local Storage Mode';
+                break;
+            case 'error':
+                indicatorEl.classList.add('error');
+                indicatorEl.style.background = '#dc3545';
+                textEl.textContent = 'Connection Error';
+                break;
+        }
+    },
+
+    // Get list items from SharePoint
+    async getListItems(listName) {
+        if (!this.isSharePointEnvironment || this.connectionStatus !== 'sharepoint') {
+            return null;
+        }
+
+        try {
+            const response = await fetch(
+                `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items?$top=5000`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json;odata=verbose'
+                    },
+                    credentials: 'same-origin'
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return data.d.results;
+        } catch (error) {
+            console.error(`Error fetching from ${listName}:`, error);
+            return null;
+        }
+    },
+
+    // Add item to SharePoint list
+    async addListItem(listName, itemData) {
+        if (!this.isSharePointEnvironment || this.connectionStatus !== 'sharepoint') {
+            return null;
+        }
+
+        try {
+            const formDigest = await this.getFormDigest();
+            
+            const response = await fetch(
+                `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json;odata=verbose',
+                        'Content-Type': 'application/json;odata=verbose',
+                        'X-RequestDigest': formDigest
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        __metadata: { type: `SP.Data.${this.getListItemType(listName)}` },
+                        ...itemData
+                    })
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return data.d;
+        } catch (error) {
+            console.error(`Error adding to ${listName}:`, error);
+            return null;
+        }
+    },
+
+    // Update item in SharePoint list
+    async updateListItem(listName, itemId, itemData) {
+        if (!this.isSharePointEnvironment || this.connectionStatus !== 'sharepoint') {
+            return false;
+        }
+
+        try {
+            const formDigest = await this.getFormDigest();
+            
+            const response = await fetch(
+                `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items(${itemId})`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json;odata=verbose',
+                        'Content-Type': 'application/json;odata=verbose',
+                        'X-RequestDigest': formDigest,
+                        'IF-MATCH': '*',
+                        'X-HTTP-Method': 'MERGE'
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        __metadata: { type: `SP.Data.${this.getListItemType(listName)}` },
+                        ...itemData
+                    })
+                }
+            );
+
+            return response.ok;
+        } catch (error) {
+            console.error(`Error updating ${listName}:`, error);
+            return false;
+        }
+    },
+
+    // Delete item from SharePoint list
+    async deleteListItem(listName, itemId) {
+        if (!this.isSharePointEnvironment || this.connectionStatus !== 'sharepoint') {
+            return false;
+        }
+
+        try {
+            const formDigest = await this.getFormDigest();
+            
+            const response = await fetch(
+                `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items(${itemId})`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json;odata=verbose',
+                        'X-RequestDigest': formDigest,
+                        'IF-MATCH': '*',
+                        'X-HTTP-Method': 'DELETE'
+                    },
+                    credentials: 'same-origin'
+                }
+            );
+
+            return response.ok;
+        } catch (error) {
+            console.error(`Error deleting from ${listName}:`, error);
+            return false;
+        }
+    },
+
+    // Get SharePoint form digest for write operations
+    async getFormDigest() {
+        try {
+            const response = await fetch(
+                `${this.siteUrl}/_api/contextinfo`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json;odata=verbose'
+                    },
+                    credentials: 'same-origin'
+                }
+            );
+
+            const data = await response.json();
+            return data.d.GetContextWebInformation.FormDigestValue;
+        } catch (error) {
+            console.error('Error getting form digest:', error);
+            return null;
+        }
+    },
+
+    // Get list item type metadata
+    getListItemType(listName) {
+        // Convert list name to SharePoint list item type
+        return listName.replace(/_/g, '_x005f_') + 'ListItem';
+    },
+
+    // Sync all data from SharePoint
+    async syncFromSharePoint() {
+        if (this.connectionStatus !== 'sharepoint') return null;
+
+        console.log('Syncing data from SharePoint...');
+        const data = {};
+
+        try {
+            for (const [key, listName] of Object.entries(this.listsConfig)) {
+                const items = await this.getListItems(listName);
+                if (items) {
+                    data[key] = items.map(item => this.normalizeSharePointItem(item, key));
+                    console.log(`✅ Synced ${items.length} items from ${listName}`);
+                }
+            }
+            return data;
+        } catch (error) {
+            console.error('Error syncing from SharePoint:', error);
+            return null;
+        }
+    },
+
+    // Normalize SharePoint item to platform format
+    normalizeSharePointItem(spItem, dataType) {
+        const normalized = {
+            id: spItem.Id || spItem.ID,
+            spId: spItem.Id || spItem.ID, // Store SharePoint ID separately
+            Title: spItem.Title
+        };
+
+        // Copy all other fields
+        for (const key in spItem) {
+            if (!key.startsWith('__') && !key.endsWith('Id') && key !== 'Id' && key !== 'ID') {
+                normalized[key] = spItem[key];
+            }
+        }
+
+        return normalized;
+    },
+
+    // Convert platform data to SharePoint format
+    toSharePointFormat(item, dataType) {
+        const spItem = {};
+        
+        for (const key in item) {
+            if (key !== 'id' && key !== 'spId' && !key.startsWith('__')) {
+                spItem[key] = item[key];
+            }
+        }
+
+        return spItem;
+    }
+};
+
+        // Platform Data Structure
+        let platformData = {
+            projects: [],
+            conferences: [],
+            grants: [],
+            irb: [],
+            meetings: [],
+            tasks: [],
+            team: [],
+            milestones: [],
+            // NEW: Enhanced project management data
+            projectTeamRoles: [],      // {id, projectId, memberId, role, startDate, endDate}
+            projectMeetings: [],       // {id, projectId, title, date, attendees, purpose, notes, actionItems}
+            projectTasks: [],          // {id, projectId, title, assignee, dueDate, priority, status, description}
+            projectCompliance: [],     // {id, projectId, type, description, status, date, notes}
+            projectCommunications: [], // {id, projectId, stakeholder, type, date, subject, summary, followup, followupDate}
+            projectDocuments: [],      // {id, projectId, name, type, uploadDate, description, url}
+            projectUpdates: [],        // {id, projectId, date, author, type, description, details}
+            irbAmendments: [],         // {id, irbId, projectId, number, submissionDate, description, status, approvalDate}
+            trainingRecords: [],       // {id, memberId, projectId, type, completionDate, expirationDate, certificateNumber}
+            hipaaCompliance: [],       // {id, projectId, checklistItem, status, completedDate, notes}
+            aiSearches: {
+                total: 0,
+                imported: 0,
+                history: []
+            },
+            settings: {
+                autoSync: true,
+                lastSync: null,
+                selectedProject: null  // Currently selected project for detailed view
+            }
+        };
+
+        // Current view state
+        let currentView = {
+            activePanel: 'dashboard',
+            currentMonth: new Date(),
+            calendarEvents: [],
+            isSyncing: false  // Prevent circular sync calls
+        };
+
+        // Initialize platform
+        function init() {
+            loadData();
+            syncAllCalendars();
+            renderCalendar();
+            showPanel('dashboard');
+        }
+
+        // Panel Navigation
+        function showPanel(panelId) {
+            document.querySelectorAll('.content-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            
+            document.getElementById(panelId).classList.add('active');
+            
+            // Find and activate the correct tab
+            const tabs = document.querySelectorAll('.nav-tab');
+            tabs.forEach(tab => {
+                if (tab.getAttribute('onclick') && tab.getAttribute('onclick').includes(panelId)) {
+                    tab.classList.add('active');
+                }
+            });
+            
+            currentView.activePanel = panelId;
+            
+            // Refresh content based on panel
+            switch(panelId) {
+                case 'dashboard':
+                    updateDashboard();
+                    break;
+                case 'projects':
+                    renderProjects();
+                    break;
+                case 'calendar':
+                    renderCalendar();
+                    break;
+                case 'conferences':
+                    renderConferences();
+                    break;
+                case 'grants':
+                    renderGrants();
+                    break;
+                case 'irb':
+                    renderIRB();
+                    break;
+                case 'meetings':
+                    renderMeetings();
+                    renderTasks();
+                    break;
+                case 'team':
+                    renderTeam();
+                    break;
+            }
+        }
+
+        // Data Management
+        function saveData() {
+            localStorage.setItem('rileyResearchPlatform', JSON.stringify(platformData));
+            // Only auto-sync if not already syncing (prevent circular calls)
+            if (platformData.settings.autoSync && !currentView.isSyncing) {
+                syncAllCalendars();
+            }
+        }
+
+        function loadData() {
+            const saved = localStorage.getItem('rileyResearchPlatform');
+            if (saved) {
+                try {
+                    platformData = JSON.parse(saved);
+                    
+                    // Ensure ALL arrays exist (for backwards compatibility with old data)
+                    if (!platformData.projects) platformData.projects = [];
+                    if (!platformData.conferences) platformData.conferences = [];
+                    if (!platformData.grants) platformData.grants = [];
+                    if (!platformData.irb) platformData.irb = [];
+                    if (!platformData.meetings) platformData.meetings = [];
+                    if (!platformData.tasks) platformData.tasks = [];
+                    if (!platformData.team) platformData.team = [];
+                    if (!platformData.milestones) platformData.milestones = [];
+                    
+                    // Ensure new project management arrays exist
+                    if (!platformData.projectTeamRoles) platformData.projectTeamRoles = [];
+                    if (!platformData.projectMeetings) platformData.projectMeetings = [];
+                    if (!platformData.projectTasks) platformData.projectTasks = [];
+                    if (!platformData.projectCompliance) platformData.projectCompliance = [];
+                    if (!platformData.projectCommunications) platformData.projectCommunications = [];
+                    if (!platformData.projectDocuments) platformData.projectDocuments = [];
+                    if (!platformData.projectUpdates) platformData.projectUpdates = [];
+                    if (!platformData.irbAmendments) platformData.irbAmendments = [];
+                    if (!platformData.trainingRecords) platformData.trainingRecords = [];
+                    if (!platformData.hipaaCompliance) platformData.hipaaCompliance = [];
+                    
+                    // Ensure settings exist
+                    if (!platformData.settings) {
+                        platformData.settings = {
+                            autoSync: true,
+                            lastSync: null,
+                            selectedProject: null
+                        };
+                    }
+                    
+                    // Ensure aiSearches exists
+                    if (!platformData.aiSearches) {
+                        platformData.aiSearches = {
+                            total: 0,
+                            imported: 0,
+                            history: []
+                        };
+                    }
+                } catch (e) {
+                    console.error('Error loading data:', e);
+                    // Initialize with complete defaults if parse fails
+                    platformData = {
+                        projects: [],
+                        conferences: [],
+                        grants: [],
+                        irb: [],
+                        meetings: [],
+                        tasks: [],
+                        team: [],
+                        milestones: [],
+                        projectTeamRoles: [],
+                        projectMeetings: [],
+                        projectTasks: [],
+                        projectCompliance: [],
+                        projectCommunications: [],
+                        projectDocuments: [],
+                        projectUpdates: [],
+                        irbAmendments: [],
+                        trainingRecords: [],
+                        hipaaCompliance: [],
+                        aiSearches: {
+                            total: 0,
+                            imported: 0,
+                            history: []
+                        },
+                        settings: {
+                            autoSync: true,
+                            lastSync: null,
+                            selectedProject: null
+                        }
+                    };
+                }
+            }
+        }
+
+        function exportData() {
+            const dataStr = JSON.stringify(platformData, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `riley-research-platform-${new Date().toISOString().split('T')[0]}.json`;
+            link.click();
+            alert('✅ Data exported successfully!');
+        }
+
+        function importData(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (confirm('Import this data? This will overwrite your current data.')) {
+                        platformData = imported;
+                        saveData();
+                        updateDashboard();
+                        alert('✅ Data imported successfully!');
+                        location.reload();
+                    }
+                } catch (error) {
+                    alert('❌ Error importing data: Invalid file format');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function clearAllData() {
+            if (confirm('⚠️ WARNING: This will permanently delete all platform data. Are you sure?')) {
+                if (confirm('This action cannot be undone. Confirm deletion?')) {
+                    localStorage.removeItem('rileyResearchPlatform');
+                    location.reload();
+                }
+            }
+        }
+
+        // Calendar Synchronization - THE CORE INTEGRATION FEATURE
+        function syncAllCalendars() {
+            // Prevent circular calls
+            if (currentView.isSyncing) {
+                return;
+            }
+            currentView.isSyncing = true;
+            
+            const syncBtn = document.getElementById('syncStatus');
+            if (syncBtn) {
+                syncBtn.style.display = 'inline-flex';
+            }
+
+            currentView.calendarEvents = [];
+
+            // Sync Projects (milestones)
+            platformData.milestones.forEach(m => {
+                const project = platformData.projects.find(p => p.id === m.projectId);
+                if (project) {
+                    currentView.calendarEvents.push({
+                        date: m.dueDate,
+                        title: `${project.title}: ${m.title}`,
+                        type: 'project',
+                        source: 'Project Milestone',
+                        project: project.title
+                    });
+                }
+            });
+
+            // Sync Conferences
+            platformData.conferences.forEach(c => {
+                // Conference date
+                currentView.calendarEvents.push({
+                    date: c.date,
+                    title: `📍 ${c.name}`,
+                    type: 'conference',
+                    source: 'Conference Event',
+                    location: c.location
+                });
+                // Submission deadline
+                if (c.deadline) {
+                    currentView.calendarEvents.push({
+                        date: c.deadline,
+                        title: `⏰ ${c.name} Deadline`,
+                        type: 'deadline',
+                        source: 'Conference Deadline'
+                    });
+                }
+            });
+
+            // Sync Grants
+            platformData.grants.forEach(g => {
+                currentView.calendarEvents.push({
+                    date: g.deadline,
+                    title: `💰 ${g.name}`,
+                    type: 'grant',
+                    source: 'Grant Deadline',
+                    agency: g.agency,
+                    amount: g.amount
+                });
+            });
+
+            // Sync IRB
+            platformData.irb.forEach(irb => {
+                if (irb.expirationDate) {
+                    currentView.calendarEvents.push({
+                        date: irb.expirationDate,
+                        title: `📋 IRB ${irb.number} Renewal`,
+                        type: 'irb',
+                        source: 'IRB Renewal'
+                    });
+                }
+            });
+
+            // Sync Meetings
+            platformData.meetings.forEach(m => {
+                currentView.calendarEvents.push({
+                    date: m.date,
+                    title: `📝 ${m.title}`,
+                    type: 'meeting',
+                    source: 'Meeting'
+                });
+            });
+
+            // Sync Tasks
+            platformData.tasks.forEach(t => {
+                if (t.status !== 'completed') {
+                    currentView.calendarEvents.push({
+                        date: t.dueDate,
+                        title: `✓ ${t.title}`,
+                        type: 'task',
+                        source: 'Task',
+                        assignee: t.assignee,
+                        priority: t.priority
+                    });
+                }
+            });
+
+            platformData.settings.lastSync = new Date().toISOString();
+            
+            // Don't call saveData here to prevent recursion
+            // Just save to localStorage directly
+            localStorage.setItem('rileyResearchPlatform', JSON.stringify(platformData));
+
+            // Update UI
+            if (currentView.activePanel === 'calendar') {
+                renderCalendar();
+            }
+            updateDashboard();
+
+            setTimeout(() => {
+                if (syncBtn) {
+                    syncBtn.style.display = 'none';
+                }
+                const lastSyncEl = document.getElementById('lastSyncTime');
+                if (lastSyncEl) {
+                    lastSyncEl.textContent = new Date().toLocaleString();
+                }
+                // Clear the syncing flag
+                currentView.isSyncing = false;
+            }, 1000);
+        }
+
+        function toggleAutoSync() {
+            const autoSyncCheckbox = document.getElementById('autoSync');
+            if (autoSyncCheckbox) {
+                platformData.settings.autoSync = autoSyncCheckbox.checked;
+                saveData();
+            }
+        }
+
+        // Calendar Rendering
+        function renderCalendar() {
+            const monthNames = ["January", "February", "March", "April", "May", "June",
+                              "July", "August", "September", "October", "November", "December"];
+            
+            const year = currentView.currentMonth.getFullYear();
+            const month = currentView.currentMonth.getMonth();
+            
+            document.getElementById('currentMonth').textContent = 
+                `${monthNames[month]} ${year}`;
+            
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const daysInPrevMonth = new Date(year, month, 0).getDate();
+            
+            let daysHTML = '';
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            // Previous month days
+            for (let i = firstDay - 1; i >= 0; i--) {
+                const day = daysInPrevMonth - i;
+                daysHTML += `<div class="calendar-day other-month">
+                    <div class="day-number">${day}</div>
+                </div>`;
+            }
+            
+            // Current month days
+            for (let day = 1; day <= daysInMonth; day++) {
+                const currentDate = new Date(year, month, day);
+                currentDate.setHours(0, 0, 0, 0);
+                const isToday = currentDate.getTime() === today.getTime();
+                
+                const dateStr = currentDate.toISOString().split('T')[0];
+                const dayEvents = currentView.calendarEvents.filter(e => e.date === dateStr);
+                
+                let eventsHTML = '';
+                dayEvents.slice(0, 3).forEach(event => {
+                    eventsHTML += `<div class="calendar-event event-${event.type}" title="${event.title} (${event.source})">${event.title}</div>`;
+                });
+                if (dayEvents.length > 3) {
+                    eventsHTML += `<div class="calendar-event" style="background: #e0e0e0; color: #666;">+${dayEvents.length - 3} more</div>`;
+                }
+                
+                daysHTML += `<div class="calendar-day ${isToday ? 'today' : ''}">
+                    <div class="day-number">${day}</div>
+                    ${eventsHTML}
+                </div>`;
+            }
+            
+            // Next month days
+            const remainingDays = 42 - (firstDay + daysInMonth);
+            for (let day = 1; day <= remainingDays; day++) {
+                daysHTML += `<div class="calendar-day other-month">
+                    <div class="day-number">${day}</div>
+                </div>`;
+            }
+            
+            document.getElementById('calendarDays').innerHTML = daysHTML;
+        }
+
+        function changeMonth(delta) {
+            currentView.currentMonth.setMonth(currentView.currentMonth.getMonth() + delta);
+            renderCalendar();
+        }
+
+        function goToToday() {
+            currentView.currentMonth = new Date();
+            renderCalendar();
+        }
+
+        // Dashboard Update
+        function updateDashboard() {
+            // Update stat cards with null checks
+            const statActiveProjects = document.getElementById('statActiveProjects');
+            if (statActiveProjects) {
+                statActiveProjects.textContent = platformData.projects.filter(p => p.status === 'Active').length;
+            }
+            
+            const statActiveGrants = document.getElementById('statActiveGrants');
+            if (statActiveGrants) {
+                statActiveGrants.textContent = platformData.grants.length;
+            }
+            
+            const statUpcomingConferences = document.getElementById('statUpcomingConferences');
+            if (statUpcomingConferences) {
+                statUpcomingConferences.textContent = platformData.conferences.filter(c => new Date(c.date) > new Date()).length;
+            }
+            
+            const statActiveIRB = document.getElementById('statActiveIRB');
+            if (statActiveIRB) {
+                statActiveIRB.textContent = platformData.irb.length;
+            }
+            
+            const statPendingTasks = document.getElementById('statPendingTasks');
+            if (statPendingTasks) {
+                statPendingTasks.textContent = platformData.tasks.filter(t => t.status !== 'completed').length;
+            }
+
+            // Count upcoming deadlines (next 30 days)
+            const now = new Date();
+            const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+            const upcomingDeadlines = currentView.calendarEvents.filter(e => {
+                const eventDate = new Date(e.date);
+                return eventDate >= now && eventDate <= thirtyDaysFromNow;
+            });
+            
+            const statUpcomingDeadlines = document.getElementById('statUpcomingDeadlines');
+            if (statUpcomingDeadlines) {
+                statUpcomingDeadlines.textContent = upcomingDeadlines.length;
+            }
+
+            // Update upcoming deadlines list
+            const sortedDeadlines = upcomingDeadlines
+                .sort((a, b) => new Date(a.date) - new Date(b.date))
+                .slice(0, 10);
+            
+            let deadlinesHTML = '';
+            sortedDeadlines.forEach(d => {
+                const daysUntil = Math.ceil((new Date(d.date) - now) / (1000 * 60 * 60 * 24));
+                const urgencyClass = daysUntil <= 7 ? 'urgent' : (daysUntil <= 14 ? 'soon' : '');
+                deadlinesHTML += `
+                    <div class="deadline-alert ${urgencyClass}">
+                        <strong>${d.title}</strong><br>
+                        <small>${d.source} • ${new Date(d.date).toLocaleDateString()} (${daysUntil} days)</small>
+                    </div>
+                `;
+            });
+            
+            const upcomingDeadlinesList = document.getElementById('upcomingDeadlinesList');
+            if (upcomingDeadlinesList) {
+                upcomingDeadlinesList.innerHTML = deadlinesHTML || '<p style="color: #999;">No upcoming deadlines in the next 30 days</p>';
+            }
+
+            // Update attention items
+            let attentionHTML = '';
+            const overdueTasks = platformData.tasks.filter(t => 
+                t.status !== 'completed' && new Date(t.dueDate) < now
+            );
+            if (overdueTasks.length > 0) {
+                attentionHTML += `
+                    <div class="deadline-alert urgent">
+                        <strong>⚠️ ${overdueTasks.length} Overdue Task${overdueTasks.length > 1 ? 's' : ''}</strong><br>
+                        <small>Review and update task status</small>
+                    </div>
+                `;
+            }
+
+            // Check for expiring IRB
+            const expiringIRB = platformData.irb.filter(irb => {
+                if (!irb.expirationDate) return false;
+                const daysUntil = Math.ceil((new Date(irb.expirationDate) - now) / (1000 * 60 * 60 * 24));
+                return daysUntil <= 60 && daysUntil > 0;
+            });
+            if (expiringIRB.length > 0) {
+                attentionHTML += `
+                    <div class="deadline-alert">
+                        <strong>📋 ${expiringIRB.length} IRB Protocol${expiringIRB.length > 1 ? 's' : ''} Expiring Soon</strong><br>
+                        <small>Prepare renewal documentation</small>
+                    </div>
+                `;
+            }
+
+            const attentionItemsList = document.getElementById('attentionItemsList');
+            if (attentionItemsList) {
+                attentionItemsList.innerHTML = attentionHTML || '<p style="color: #999;">All clear! No items require immediate attention ✅</p>';
+            }
+
+            // Update AI stats
+            const totalSearches = document.getElementById('totalSearches');
+            if (totalSearches) {
+                totalSearches.textContent = platformData.aiSearches.total;
+            }
+            
+            const totalImported = document.getElementById('totalImported');
+            if (totalImported) {
+                totalImported.textContent = platformData.aiSearches.imported;
+            }
+            
+            const avgScore = platformData.aiSearches.history.length > 0
+                ? Math.round(platformData.aiSearches.history.reduce((sum, s) => sum + (s.avgMatch || 0), 0) / platformData.aiSearches.history.length)
+                : 0;
+            
+            const avgMatchScore = document.getElementById('avgMatchScore');
+            if (avgMatchScore) {
+                avgMatchScore.textContent = `${avgScore}%`;
+            }
+        }
+
+        // AI Search Functions
+        function aiSearchConferences() {
+            const query = document.getElementById('aiConferenceQuery').value;
+            const description = document.getElementById('aiConferenceDescription').value;
+            
+            if (!query) {
+                alert('Please enter search keywords');
+                return;
+            }
+
+            // Simulate AI search (in production, this would call an actual AI API)
+            const mockResults = generateMockConferences(query, description);
+            displayAIResults(mockResults, 'conference');
+            
+            platformData.aiSearches.total++;
+            platformData.aiSearches.history.push({
+                type: 'conference',
+                query,
+                description,
+                timestamp: new Date().toISOString(),
+                results: mockResults.length,
+                avgMatch: Math.round(mockResults.reduce((sum, r) => sum + r.aiMatch, 0) / mockResults.length)
+            });
+            saveData();
+            updateDashboard();
+        }
+
+        function aiSearchGrants() {
+            const query = document.getElementById('aiGrantQuery').value;
+            const description = document.getElementById('aiGrantDescription').value;
+            
+            if (!query) {
+                alert('Please enter search keywords');
+                return;
+            }
+
+            // Simulate AI search (in production, this would call an actual AI API)
+            const mockResults = generateMockGrants(query, description);
+            displayAIResults(mockResults, 'grant');
+            
+            platformData.aiSearches.total++;
+            platformData.aiSearches.history.push({
+                type: 'grant',
+                query,
+                description,
+                timestamp: new Date().toISOString(),
+                results: mockResults.length,
+                avgMatch: Math.round(mockResults.reduce((sum, r) => sum + r.aiMatch, 0) / mockResults.length)
+            });
+            saveData();
+            updateDashboard();
+        }
+
+        function generateMockConferences(query, description) {
+            // This simulates AI-generated conference recommendations
+            // In production, this would use actual AI/ML models and conference databases
+            const baseConferences = [
+                {
+                    name: `International ${query.charAt(0).toUpperCase() + query.slice(1)} Research Symposium 2026`,
+                    location: 'Chicago, IL',
+                    date: '2026-06-15',
+                    deadline: '2026-01-15',
+                    url: 'https://example-conference.org',
+                    focus: query + ', clinical research, outcomes',
+                    aiMatch: Math.floor(Math.random() * 15) + 85
+                },
+                {
+                    name: `${query.charAt(0).toUpperCase() + query.slice(1)} Clinical Excellence Conference`,
+                    location: 'New York, NY',
+                    date: '2026-09-20',
+                    deadline: '2026-04-30',
+                    url: 'https://example-conference.org',
+                    focus: query + ', pediatric applications, innovation',
+                    aiMatch: Math.floor(Math.random() * 15) + 80
+                },
+                {
+                    name: 'Pediatric Orthopedic Research Forum 2026',
+                    location: 'San Francisco, CA',
+                    date: '2026-11-10',
+                    deadline: '2026-06-15',
+                    url: 'https://example-conference.org',
+                    focus: 'pediatric orthopedics, ' + query + ', surgery',
+                    aiMatch: Math.floor(Math.random() * 15) + 75
+                }
+            ];
+            return baseConferences;
+        }
+
+        function generateMockGrants(query, description) {
+            // This simulates AI-generated grant recommendations
+            // In production, this would use actual AI/ML models and grant databases
+            const baseGrants = [
+                {
+                    name: `NIH R01 - ${query.charAt(0).toUpperCase() + query.slice(1)} Research Initiative`,
+                    agency: 'NIH - NIAMS',
+                    deadline: '2026-02-05',
+                    amount: '$2M - $3M over 5 years',
+                    focus: query + ', translational research, clinical outcomes',
+                    url: 'https://grants.nih.gov',
+                    aiMatch: Math.floor(Math.random() * 10) + 90
+                },
+                {
+                    name: `Foundation Grant for ${query.charAt(0).toUpperCase() + query.slice(1)} Studies`,
+                    agency: 'POSNA Foundation',
+                    deadline: '2025-09-15',
+                    amount: '$75K - $150K',
+                    focus: query + ', pediatric research, quality improvement',
+                    url: 'https://posna.org',
+                    aiMatch: Math.floor(Math.random() * 10) + 85
+                },
+                {
+                    name: `Clinical Research Award - ${query}`,
+                    agency: 'Shriners Hospitals',
+                    deadline: '2026-03-01',
+                    amount: '$150K - $250K',
+                    focus: query + ', clinical trials, patient outcomes',
+                    url: 'https://shrinerschildrens.org',
+                    aiMatch: Math.floor(Math.random() * 10) + 80
+                }
+            ];
+            return baseGrants;
+        }
+
+        function displayAIResults(results, type) {
+            const container = document.getElementById('aiSearchResults');
+            
+            let html = `
+                <div style="background: white; padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
+                    <h3 style="color: var(--iusm-crimson); margin-bottom: 20px;">
+                        🎯 AI-Generated ${type === 'conference' ? 'Conference' : 'Grant'} Recommendations
+                    </h3>
+                    <p style="margin-bottom: 20px; color: #6c757d;">
+                        Found ${results.length} highly relevant opportunities based on your search criteria.
+                        Results are ranked by AI match score.
+                    </p>
+            `;
+            
+            results.forEach((r, idx) => {
+                html += `
+                    <div class="card" id="ai-result-${idx}">
+                        <div class="card-header">
+                            <div>
+                                <h4 class="card-title">${r.name}</h4>
+                                <span class="ai-match-badge">AI Match: ${r.aiMatch}%</span>
+                            </div>
+                        </div>
+                        <div style="margin: 15px 0;">
+                            ${type === 'conference' ? `
+                                <p><strong>Location:</strong> ${r.location}</p>
+                                <p><strong>Date:</strong> ${new Date(r.date).toLocaleDateString()}</p>
+                                <p><strong>Deadline:</strong> ${new Date(r.deadline).toLocaleDateString()}</p>
+                            ` : `
+                                <p><strong>Agency:</strong> ${r.agency}</p>
+                                <p><strong>Amount:</strong> ${r.amount}</p>
+                                <p><strong>Deadline:</strong> ${new Date(r.deadline).toLocaleDateString()}</p>
+                            `}
+                            <p><strong>Focus:</strong> ${r.focus}</p>
+                            ${r.url ? `<p><strong>URL:</strong> <a href="${r.url}" target="_blank">${r.url}</a></p>` : ''}
+                        </div>
+                        <button class="btn btn-success" onclick="importAIResult(${idx}, '${type}', ${JSON.stringify(r).replace(/"/g, '&quot;')})">
+                            ✅ Import to ${type === 'conference' ? 'Conferences' : 'Grants'}
+                        </button>
+                    </div>
+                `;
+            });
+            
+            html += `
+                <button class="btn btn-primary" style="margin-top: 20px;" onclick="importAllAIResults('${type}', ${JSON.stringify(results).replace(/"/g, '&quot;')})">
+                    ✅ Import All ${results.length} Results
+                </button>
+                </div>
+            `;
+            
+            container.innerHTML = html;
+        }
+
+        function importAIResult(idx, type, result) {
+            if (type === 'conference') {
+                platformData.conferences.push({
+                    id: 'CONF-' + Date.now(),
+                    name: result.name,
+                    location: result.location,
+                    date: result.date,
+                    deadline: result.deadline,
+                    url: result.url,
+                    focus: result.focus,
+                    aiMatch: result.aiMatch,
+                    status: 'planning'
+                });
+            } else {
+                platformData.grants.push({
+                    id: 'GRANT-' + Date.now(),
+                    name: result.name,
+                    agency: result.agency,
+                    deadline: result.deadline,
+                    amount: result.amount,
+                    focus: result.focus,
+                    url: result.url,
+                    aiMatch: result.aiMatch,
+                    status: 'considering'
+                });
+            }
+            
+            platformData.aiSearches.imported++;
+            saveData();
+            updateDashboard();
+            syncAllCalendars();
+            
+            const card = document.getElementById(`ai-result-${idx}`);
+            card.style.background = '#d4edda';
+            card.style.border = '2px solid #28a745';
+            
+            alert(`✅ Successfully imported: ${result.name}\n\nThis ${type} has been added to your tracker and synced to the calendar!`);
+        }
+
+        function importAllAIResults(type, results) {
+            let count = 0;
+            results.forEach(r => {
+                if (type === 'conference') {
+                    platformData.conferences.push({
+                        id: 'CONF-' + Date.now() + count,
+                        name: r.name,
+                        location: r.location,
+                        date: r.date,
+                        deadline: r.deadline,
+                        url: r.url,
+                        focus: r.focus,
+                        aiMatch: r.aiMatch,
+                        status: 'planning'
+                    });
+                } else {
+                    platformData.grants.push({
+                        id: 'GRANT-' + Date.now() + count,
+                        name: r.name,
+                        agency: r.agency,
+                        deadline: r.deadline,
+                        amount: r.amount,
+                        focus: r.focus,
+                        url: r.url,
+                        aiMatch: r.aiMatch,
+                        status: 'considering'
+                    });
+                }
+                count++;
+            });
+            
+            platformData.aiSearches.imported += count;
+            saveData();
+            updateDashboard();
+            syncAllCalendars();
+            
+            alert(`✅ Successfully imported ${count} ${type === 'conference' ? 'conferences' : 'grants'}!\n\nAll items have been added to your tracker and synced to the calendar.`);
+            
+            document.getElementById('aiSearchResults').innerHTML = `
+                <div class="alert-info" style="background: #d4edda; color: #155724; border-left: 4px solid #28a745;">
+                    <strong>✅ Import Complete!</strong><br>
+                    ${count} ${type === 'conference' ? 'conferences' : 'grants'} have been added to your tracker and synced to the unified calendar.
+                    View them in the ${type === 'conference' ? 'Conferences' : 'Grants'} tab.
+                </div>
+            `;
+        }
+
+        function importPopularConferences() {
+            const popular = [
+                {
+                    name: 'POSNA Annual Meeting 2026',
+                    location: 'Washington, DC',
+                    date: '2026-05-13',
+                    deadline: '2025-12-15',
+                    url: 'https://posna.org',
+                    focus: 'pediatric orthopedics, all subspecialties',
+                    aiMatch: 98,
+                    status: 'planning'
+                },
+                {
+                    name: 'Scoliosis Research Society Annual Meeting 2026',
+                    location: 'Boston, MA',
+                    date: '2026-09-23',
+                    deadline: '2026-04-15',
+                    url: 'https://www.srs.org',
+                    focus: 'scoliosis, spinal deformity',
+                    aiMatch: 96,
+                    status: 'planning'
+                },
+                {
+                    name: 'AAOS Annual Meeting 2026',
+                    location: 'Las Vegas, NV',
+                    date: '2026-03-10',
+                    deadline: '2025-10-01',
+                    url: 'https://www.aaos.org',
+                    focus: 'general orthopedics with pediatric track',
+                    aiMatch: 85,
+                    status: 'planning'
+                }
+            ];
+            
+            popular.forEach((c, idx) => {
+                platformData.conferences.push({
+                    id: 'CONF-' + Date.now() + idx,
+                    ...c
+                });
+            });
+            
+            platformData.aiSearches.imported += popular.length;
+            saveData();
+            updateDashboard();
+            syncAllCalendars();
+            
+            alert(`✅ Imported ${popular.length} popular pediatric orthopedic conferences!\n\nAll conferences have been added and synced to the calendar.`);
+        }
+
+        function importActiveGrants() {
+            const active = [
+                {
+                    name: 'NIH R01 - Pediatric Musculoskeletal Research',
+                    agency: 'NIH - NIAMS',
+                    deadline: '2026-02-05',
+                    amount: '$1.5M - $3M over 5 years',
+                    focus: 'Basic and translational research in pediatric orthopedics',
+                    url: 'https://grants.nih.gov',
+                    aiMatch: 96,
+                    status: 'considering'
+                },
+                {
+                    name: 'POSNA Research Grant',
+                    agency: 'POSNA Foundation',
+                    deadline: '2025-09-15',
+                    amount: '$50K - $100K',
+                    focus: 'Clinical and outcomes research',
+                    url: 'https://posna.org/research',
+                    aiMatch: 94,
+                    status: 'considering'
+                },
+                {
+                    name: 'Shriners Hospitals Research Grant',
+                    agency: 'Shriners Hospitals for Children',
+                    deadline: '2026-03-01',
+                    amount: '$100K - $200K',
+                    focus: 'Pediatric orthopedic research',
+                    url: 'https://www.shrinerschildrens.org',
+                    aiMatch: 97,
+                    status: 'considering'
+                }
+            ];
+            
+            active.forEach((g, idx) => {
+                platformData.grants.push({
+                    id: 'GRANT-' + Date.now() + idx,
+                    ...g
+                });
+            });
+            
+            platformData.aiSearches.imported += active.length;
+            saveData();
+            updateDashboard();
+            syncAllCalendars();
+            
+            alert(`✅ Imported ${active.length} active grant opportunities!\n\nAll grants have been added and synced to the calendar.`);
+        }
+
+        // Render Functions (Simplified versions - expand as needed)
+        function renderProjects() {
+            const container = document.getElementById('projectsList');
+            if (!platformData.projects.length) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔬</div>
+                        <div class="empty-state-text">No research projects yet</div>
+                        <p style="color: #999;">Click "+ New Project" above to create your first project</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            platformData.projects.forEach(p => {
+                const teamCount = platformData.projectTeamRoles.filter(r => r.projectId === p.id).length;
+                const taskCount = platformData.projectTasks.filter(t => t.projectId === p.id && t.status !== 'completed').length;
+                const milestoneCount = platformData.milestones.filter(m => m.projectId === p.id).length;
+                
+                html += `
+                    <div class="project-list-item" onclick="viewProjectDetails('${p.id}')">
+                        <div class="project-title-row">
+                            <div class="project-title">${p.title}</div>
+                            <span class="status-badge ${p.status ? p.status.toLowerCase() : 'pending'}">${p.status || 'Pending'}</span>
+                        </div>
+                        <div class="project-meta">
+                            <div class="project-meta-item">
+                                <strong>PI:</strong> ${p.pi || 'Not assigned'}
+                            </div>
+                            <div class="project-meta-item">
+                                <strong>Type:</strong> ${p.type || 'Not specified'}
+                            </div>
+                            <div class="project-meta-item">
+                                👥 ${teamCount} team members
+                            </div>
+                            <div class="project-meta-item">
+                                ✓ ${taskCount} active tasks
+                            </div>
+                            <div class="project-meta-item">
+                                🎯 ${milestoneCount} milestones
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; display: flex; gap: 10px;" onclick="event.stopPropagation();">
+                            <button class="btn btn-primary btn-sm" onclick="viewProjectDetails('${p.id}')">
+                                📊 View Details
+                            </button>
+                            <button class="btn btn-info btn-sm" onclick="event.stopPropagation(); editProject('${p.id}')">
+                                ✏️ Edit
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteProject('${p.id}')">
+                                🗑️ Delete
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        // Project Detail View Functions
+        function showProjectsList() {
+            document.getElementById('projectsListView').style.display = 'block';
+            document.getElementById('projectDetailView').style.display = 'none';
+            document.getElementById('backToProjectsList').style.display = 'none';
+            platformData.settings.selectedProject = null;
+            saveData();
+        }
+        
+        function viewProjectDetails(projectId) {
+            const project = platformData.projects.find(p => p.id === projectId);
+            if (!project) {
+                alert('Project not found');
+                return;
+            }
+            
+            platformData.settings.selectedProject = projectId;
+            
+            // Show detail view
+            document.getElementById('projectsListView').style.display = 'none';
+            document.getElementById('projectDetailView').style.display = 'block';
+            document.getElementById('backToProjectsList').style.display = 'inline-block';
+            
+            // Update header
+            document.getElementById('projectDetailTitle').textContent = project.title;
+            document.getElementById('projectDetailPI').textContent = `PI: ${project.pi || 'Not assigned'}`;
+            document.getElementById('projectDetailType').textContent = project.type || 'Type not specified';
+            document.getElementById('projectDetailDates').textContent = 
+                `${project.startDate ? new Date(project.startDate).toLocaleDateString() : 'Start TBD'} - ${project.endDate ? new Date(project.endDate).toLocaleDateString() : 'End TBD'}`;
+            
+            const statusBadge = document.getElementById('projectDetailStatus');
+            statusBadge.textContent = project.status || 'Pending';
+            statusBadge.className = `status-badge ${project.status ? project.status.toLowerCase() : 'pending'}`;
+            
+            // Update all sections
+            updateProjectOverview(projectId);
+            updateProjectTeamRoles(projectId);
+            updateProjectMilestones(projectId);
+            updateProjectMeetingsTasks(projectId);
+            updateProjectCompliance(projectId);
+            updateProjectCommunications(projectId);
+            updateProjectDocuments(projectId);
+            updateProjectUpdates(projectId);
+            updateProjectCounts(projectId);
+            
+            // Show overview by default
+            showProjectSection('overview');
+            
+            saveData();
+        }
+        
+        function showProjectSection(sectionName) {
+            // Hide all sections
+            document.querySelectorAll('.project-section').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.project-nav-tab').forEach(t => t.classList.remove('active'));
+            
+            // Show selected section
+            document.getElementById(`project-${sectionName}`).classList.add('active');
+            
+            // Activate corresponding tab
+            const tabs = document.querySelectorAll('.project-nav-tab');
+            tabs.forEach(tab => {
+                if (tab.getAttribute('onclick').includes(sectionName)) {
+                    tab.classList.add('active');
+                }
+            });
+        }
+        
+        function updateProjectCounts(projectId) {
+            const teamCount = platformData.projectTeamRoles.filter(r => r.projectId === projectId).length;
+            const milestoneCount = platformData.milestones.filter(m => m.projectId === projectId).length;
+            const taskCount = platformData.projectTasks.filter(t => t.projectId === projectId && t.status !== 'completed').length;
+            const complianceCount = platformData.projectCompliance.filter(c => c.projectId === projectId).length +
+                                   platformData.irbAmendments.filter(a => a.projectId === projectId).length +
+                                   platformData.trainingRecords.filter(t => t.projectId === projectId).length;
+            const commsCount = platformData.projectCommunications.filter(c => c.projectId === projectId).length;
+            const docsCount = platformData.projectDocuments.filter(d => d.projectId === projectId).length;
+            const updatesCount = platformData.projectUpdates.filter(u => u.projectId === projectId).length;
+            
+            document.getElementById('teamCount').textContent = teamCount;
+            document.getElementById('milestonesCount').textContent = milestoneCount;
+            document.getElementById('tasksCount').textContent = taskCount;
+            document.getElementById('complianceCount').textContent = complianceCount;
+            document.getElementById('commsCount').textContent = commsCount;
+            document.getElementById('docsCount').textContent = docsCount;
+            document.getElementById('updatesCount').textContent = updatesCount;
+        }
+        
+        function updateProjectOverview(projectId) {
+            const project = platformData.projects.find(p => p.id === projectId);
+            const milestones = platformData.milestones.filter(m => m.projectId === projectId);
+            const completedMilestones = milestones.filter(m => m.status === 'completed').length;
+            const progress = milestones.length > 0 ? Math.round((completedMilestones / milestones.length) * 100) : 0;
+            
+            document.getElementById('projectProgressBar').style.width = progress + '%';
+            document.getElementById('projectProgressText').textContent = 
+                `${completedMilestones} of ${milestones.length} milestones completed`;
+            document.getElementById('projectProgressPercent').textContent = progress + '%';
+            
+            // Quick stats
+            document.getElementById('quickStatTeam').textContent = 
+                platformData.projectTeamRoles.filter(r => r.projectId === projectId).length;
+            document.getElementById('quickStatTasks').textContent = 
+                platformData.projectTasks.filter(t => t.projectId === projectId && t.status !== 'completed').length;
+            document.getElementById('quickStatMilestones').textContent = 
+                milestones.filter(m => m.status !== 'completed' && new Date(m.dueDate) > new Date()).length;
+            document.getElementById('quickStatComms').textContent = 
+                platformData.projectCommunications.filter(c => c.projectId === projectId && 
+                    (Date.now() - new Date(c.date).getTime()) < 30 * 24 * 60 * 60 * 1000).length;
+            
+            // Recent activity
+            const recentUpdates = platformData.projectUpdates
+                .filter(u => u.projectId === projectId)
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .slice(0, 5);
+            
+            const activityList = document.getElementById('recentActivityList');
+            if (recentUpdates.length > 0) {
+                activityList.innerHTML = recentUpdates.map(u => `
+                    <div style="padding: 8px 0; border-bottom: 1px solid #e9ecef;">
+                        <div style="font-weight: 600; color: var(--iusm-crimson);">${u.type}</div>
+                        <div style="font-size: 0.9em; color: #6c757d;">${new Date(u.date).toLocaleDateString()} - ${u.description}</div>
+                    </div>
+                `).join('');
+            } else {
+                activityList.innerHTML = '<p style="color: #999;">No recent activity</p>';
+            }
+            
+            const content = document.getElementById('projectOverviewContent');
+            content.innerHTML = `
+                <div class="card">
+                    <h4>Project Description</h4>
+                    <p>${project.description || 'No description provided'}</p>
+                    ${project.notes ? `
+                    <div style="margin-top: 15px;">
+                        <h5>Notes:</h5>
+                        <p>${project.notes}</p>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        function updateProjectTeamRoles(projectId) {
+            const roles = platformData.projectTeamRoles.filter(r => r.projectId === projectId);
+            const container = document.getElementById('teamRolesGrid');
+            
+            if (roles.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">👥</div>
+                        <div class="empty-state-text">No team members assigned</div>
+                        <p style="color: #999;">Click "+ Add Team Member" to assign roles</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = roles.map(role => {
+                const member = platformData.team.find(t => t.id === role.memberId);
+                return `
+                    <div class="team-role-card">
+                        <div class="team-role-name">${member ? member.name : 'Unknown'}</div>
+                        <div class="team-role-position">${role.role}</div>
+                        <div class="team-role-dates">
+                            ${new Date(role.startDate).toLocaleDateString()} - ${role.endDate ? new Date(role.endDate).toLocaleDateString() : 'Present'}
+                        </div>
+                        <button class="btn btn-danger btn-sm" style="margin-top: 10px;" onclick="deleteProjectTeamRole('${role.id}')">
+                            Remove
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function updateProjectMilestones(projectId) {
+            const milestones = platformData.milestones
+                .filter(m => m.projectId === projectId)
+                .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+            
+            const container = document.getElementById('milestonesTimeline');
+            
+            if (milestones.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🎯</div>
+                        <div class="empty-state-text">No milestones defined</div>
+                        <p style="color: #999;">Click "+ Add Milestone" to create project milestones</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = milestones.map(m => `
+                <div class="timeline-item">
+                    <div class="timeline-dot ${m.status === 'completed' ? 'completed' : ''}"></div>
+                    <div class="timeline-content">
+                        <div class="timeline-date">${new Date(m.dueDate).toLocaleDateString()}</div>
+                        <div class="timeline-title">${m.title}</div>
+                        <p>${m.description || 'No description'}</p>
+                        <div style="margin-top: 10px;">
+                            <span class="status-badge ${m.status ? m.status.toLowerCase() : 'pending'}">${m.status || 'Pending'}</span>
+                            ${m.status !== 'completed' ? `
+                                <button class="btn btn-success btn-sm" onclick="completeMilestone('${m.id}')" style="margin-left: 10px;">
+                                    ✓ Mark Complete
+                                </button>
+                            ` : ''}
+                            <button class="btn btn-info btn-sm" onclick="editMilestone('${m.id}')" style="margin-left: 10px;">
+                                Edit
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteMilestone('${m.id}')" style="margin-left: 10px;">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function updateProjectMeetingsTasks(projectId) {
+            // Meetings
+            const meetings = platformData.projectMeetings
+                .filter(m => m.projectId === projectId)
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            
+            const meetingsList = document.getElementById('projectMeetingsList');
+            if (meetings.length === 0) {
+                meetingsList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No meetings recorded</p>';
+            } else {
+                meetingsList.innerHTML = meetings.map(m => `
+                    <div class="card">
+                        <div class="card-header">
+                            <h4 class="card-title">${m.title}</h4>
+                            <span class="status-badge">${new Date(m.date).toLocaleDateString()}</span>
+                        </div>
+                        <p><strong>Purpose:</strong> ${m.purpose || 'Not specified'}</p>
+                        <p><strong>Attendees:</strong> ${m.attendees || 'Not listed'}</p>
+                        <p><strong>Notes:</strong> ${m.notes || 'No notes'}</p>
+                        ${m.actionItems ? `<p><strong>Action Items:</strong> ${m.actionItems}</p>` : ''}
+                        <button class="btn btn-danger btn-sm" onclick="deleteProjectMeeting('${m.id}')">Delete</button>
+                    </div>
+                `).join('');
+            }
+            
+            // Tasks
+            const tasks = platformData.projectTasks
+                .filter(t => t.projectId === projectId)
+                .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+            
+            const tasksList = document.getElementById('projectTasksList');
+            if (tasks.length === 0) {
+                tasksList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No tasks created</p>';
+            } else {
+                tasksList.innerHTML = tasks.map(t => {
+                    const isOverdue = new Date(t.dueDate) < new Date() && t.status !== 'completed';
+                    return `
+                        <div class="card">
+                            <div class="card-header">
+                                <h4 class="card-title">${t.title}</h4>
+                                <div>
+                                    <span class="status-badge ${t.priority}">${t.priority}</span>
+                                    ${isOverdue ? '<span class="status-badge overdue">OVERDUE</span>' : ''}
+                                </div>
+                            </div>
+                            <p><strong>Assigned to:</strong> ${t.assignee}</p>
+                            <p><strong>Due:</strong> ${new Date(t.dueDate).toLocaleDateString()}</p>
+                            <p><strong>Description:</strong> ${t.description || 'No description'}</p>
+                            <p><strong>Status:</strong> <span class="status-badge ${t.status}">${t.status}</span></p>
+                            <div style="margin-top: 10px;">
+                                ${t.status !== 'completed' ? `
+                                    <button class="btn btn-success btn-sm" onclick="completeProjectTask('${t.id}')">✓ Complete</button>
+                                ` : ''}
+                                <button class="btn btn-info btn-sm" onclick="editProjectTask('${t.id}')">Edit</button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteProjectTask('${t.id}')">Delete</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+        
+        function updateProjectCompliance(projectId) {
+            // IRB Amendments
+            const amendments = platformData.irbAmendments.filter(a => a.projectId === projectId);
+            const amendmentsList = document.getElementById('irbAmendmentsList');
+            if (amendments.length === 0) {
+                amendmentsList.innerHTML = '<p style="color: #999;">No amendments</p>';
+            } else {
+                amendmentsList.innerHTML = amendments.map(a => `
+                    <div style="padding: 10px 0; border-bottom: 1px solid #e9ecef;">
+                        <strong>Amendment ${a.number}</strong><br>
+                        <small>${new Date(a.submissionDate).toLocaleDateString()} - ${a.description}</small><br>
+                        <span class="status-badge ${a.status ? a.status.toLowerCase() : 'pending'}">${a.status || 'Pending'}</span>
+                    </div>
+                `).join('');
+            }
+            
+            // HIPAA Compliance
+            const hipaa = platformData.hipaaCompliance.filter(h => h.projectId === projectId);
+            const hipaaList = document.getElementById('hipaaComplianceList');
+            if (hipaa.length === 0) {
+                hipaaList.innerHTML = '<p style="color: #999;">No checklist items</p>';
+            } else {
+                hipaaList.innerHTML = hipaa.map(h => `
+                    <div style="padding: 10px 0; border-bottom: 1px solid #e9ecef;">
+                        <strong>${h.checklistItem}</strong><br>
+                        <span class="status-badge ${h.status}">${h.status}</span>
+                        ${h.completedDate ? `<br><small>Completed: ${new Date(h.completedDate).toLocaleDateString()}</small>` : ''}
+                    </div>
+                `).join('');
+            }
+            
+            // Training Records
+            const training = platformData.trainingRecords.filter(t => t.projectId === projectId);
+            const trainingList = document.getElementById('trainingRecordsList');
+            if (training.length === 0) {
+                trainingList.innerHTML = '<p style="color: #999;">No training records</p>';
+            } else {
+                trainingList.innerHTML = training.map(t => {
+                    const member = platformData.team.find(m => m.id === t.memberId);
+                    const daysUntilExpiry = t.expirationDate ? 
+                        Math.ceil((new Date(t.expirationDate) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+                    return `
+                        <div style="padding: 10px 0; border-bottom: 1px solid #e9ecef;">
+                            <strong>${member ? member.name : 'Unknown'}</strong> - ${t.type}<br>
+                            <small>Completed: ${new Date(t.completionDate).toLocaleDateString()}</small><br>
+                            ${daysUntilExpiry !== null ? (
+                                daysUntilExpiry < 0 ? `<span class="status-badge overdue">Expired</span>` :
+                                daysUntilExpiry < 30 ? `<span class="status-badge urgent">Expires in ${daysUntilExpiry} days</span>` :
+                                `<span class="status-badge upcoming">Expires ${new Date(t.expirationDate).toLocaleDateString()}</span>`
+                            ) : ''}
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            // Other Compliance
+            const compliance = platformData.projectCompliance.filter(c => c.projectId === projectId);
+            const complianceList = document.getElementById('otherComplianceList');
+            if (compliance.length === 0) {
+                complianceList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No compliance items</p>';
+            } else {
+                complianceList.innerHTML = compliance.map(c => `
+                    <div class="card">
+                        <div class="card-header">
+                            <h4>${c.type}</h4>
+                            <span class="status-badge ${c.status}">${c.status}</span>
+                        </div>
+                        <p>${c.description}</p>
+                        <small>Date: ${new Date(c.date).toLocaleDateString()}</small>
+                        ${c.notes ? `<p style="margin-top: 10px;"><strong>Notes:</strong> ${c.notes}</p>` : ''}
+                    </div>
+                `).join('');
+            }
+        }
+        
+        function updateProjectCommunications(projectId) {
+            const comms = platformData.projectCommunications
+                .filter(c => c.projectId === projectId)
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            
+            const container = document.getElementById('communicationsList');
+            
+            if (comms.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">💬</div>
+                        <div class="empty-state-text">No communications logged</div>
+                        <p style="color: #999;">Click "+ Log Communication" to record stakeholder interactions</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = comms.map(c => `
+                <div class="communication-item ${c.followup && !c.followedUp ? 'followup-needed' : ''}">
+                    <div class="communication-header">
+                        <div class="communication-stakeholder">${c.stakeholder}</div>
+                        <div>
+                            <span class="communication-type">${c.type}</span>
+                            ${c.followup && !c.followedUp ? '<span style="margin-left: 10px;" class="status-badge urgent">Follow-up Needed</span>' : ''}
+                        </div>
+                    </div>
+                    <div class="communication-body">
+                        <strong>${c.subject}</strong><br>
+                        ${c.summary}
+                    </div>
+                    <div class="communication-footer">
+                        <span>${new Date(c.date).toLocaleDateString()}</span>
+                        ${c.followup ? `<span>Follow-up: ${new Date(c.followupDate).toLocaleDateString()}</span>` : ''}
+                        <button class="btn btn-danger btn-sm" onclick="deleteProjectCommunication('${c.id}')">Delete</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function updateProjectDocuments(projectId) {
+            const docs = platformData.projectDocuments
+                .filter(d => d.projectId === projectId)
+                .sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
+            
+            const container = document.getElementById('documentsList');
+            
+            if (docs.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📄</div>
+                        <div class="empty-state-text">No documents</div>
+                        <p style="color: #999;">Click "+ Add Document" to link project documents</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = docs.map(d => `
+                <div class="document-item">
+                    <div class="document-icon">📄</div>
+                    <div class="document-info">
+                        <div class="document-name">${d.name}</div>
+                        <div class="document-meta">
+                            ${d.type} • Uploaded ${new Date(d.uploadDate).toLocaleDateString()}
+                            ${d.description ? ` • ${d.description}` : ''}
+                        </div>
+                    </div>
+                    <div>
+                        ${d.url ? `<button class="btn btn-primary btn-sm" onclick="window.open('${d.url}', '_blank')">Open</button>` : ''}
+                        <button class="btn btn-info btn-sm" onclick="editProjectDocument('${d.id}')">Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteProjectDocument('${d.id}')">Delete</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function updateProjectUpdates(projectId) {
+            const updates = platformData.projectUpdates
+                .filter(u => u.projectId === projectId)
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            
+            const container = document.getElementById('updatesTimeline');
+            
+            if (updates.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📝</div>
+                        <div class="empty-state-text">No updates recorded</div>
+                        <p style="color: #999;">Click "+ Add Update" to log project changes and progress</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = updates.map(u => `
+                <div class="timeline-item">
+                    <div class="timeline-dot"></div>
+                    <div class="timeline-content">
+                        <div class="timeline-date">${new Date(u.date).toLocaleDateString()} • ${u.author}</div>
+                        <div class="timeline-title">${u.type}</div>
+                        <p><strong>${u.description}</strong></p>
+                        ${u.details ? `<p>${u.details}</p>` : ''}
+                        <button class="btn btn-danger btn-sm" style="margin-top: 10px;" onclick="deleteProjectUpdate('${u.id}')">
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderConferences() {
+            const container = document.getElementById('conferencesList');
+            let html = '<table><thead><tr><th>Conference</th><th>Location</th><th>Date</th><th>Deadline</th><th>AI Match</th><th>Actions</th></tr></thead><tbody>';
+            
+            platformData.conferences.sort((a, b) => new Date(a.date) - new Date(b.date)).forEach(c => {
+                const daysUntilDeadline = Math.ceil((new Date(c.deadline) - new Date()) / (1000 * 60 * 60 * 24));
+                const urgency = daysUntilDeadline <= 7 ? 'urgent' : (daysUntilDeadline <= 30 ? 'soon' : 'upcoming');
+                
+                html += `
+                    <tr>
+                        <td>${c.name}</td>
+                        <td>${c.location}</td>
+                        <td>${new Date(c.date).toLocaleDateString()}</td>
+                        <td>
+                            <span class="status-badge ${urgency}">
+                                ${new Date(c.deadline).toLocaleDateString()} (${daysUntilDeadline} days)
+                            </span>
+                        </td>
+                        <td>${c.aiMatch ? `<span class="ai-match-badge">${c.aiMatch}%</span>` : 'N/A'}</td>
+                        <td>
+                            <button class="btn btn-info btn-sm" onclick="viewConference('${c.id}')">View</button>
+                            <button class="btn btn-primary btn-sm" onclick="editConference('${c.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteConference('${c.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = platformData.conferences.length > 0 ? html : '<p style="text-align: center; color: #999;">No conferences yet. Use AI Discovery or click "+ Add Conference".</p>';
+        }
+
+        function renderGrants() {
+            const container = document.getElementById('grantsList');
+            let html = '<table><thead><tr><th>Grant Name</th><th>Agency</th><th>Amount</th><th>Deadline</th><th>AI Match</th><th>Actions</th></tr></thead><tbody>';
+            
+            platformData.grants.sort((a, b) => new Date(a.deadline) - new Date(b.deadline)).forEach(g => {
+                const daysUntilDeadline = Math.ceil((new Date(g.deadline) - new Date()) / (1000 * 60 * 60 * 24));
+                const urgency = daysUntilDeadline <= 14 ? 'urgent' : (daysUntilDeadline <= 30 ? 'soon' : 'upcoming');
+                
+                html += `
+                    <tr>
+                        <td>${g.name}</td>
+                        <td>${g.agency}</td>
+                        <td>${g.amount}</td>
+                        <td>
+                            <span class="status-badge ${urgency}">
+                                ${new Date(g.deadline).toLocaleDateString()} (${daysUntilDeadline} days)
+                            </span>
+                        </td>
+                        <td>${g.aiMatch ? `<span class="ai-match-badge">${g.aiMatch}%</span>` : 'N/A'}</td>
+                        <td>
+                            <button class="btn btn-info btn-sm" onclick="viewGrant('${g.id}')">View</button>
+                            <button class="btn btn-primary btn-sm" onclick="editGrant('${g.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteGrant('${g.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = platformData.grants.length > 0 ? html : '<p style="text-align: center; color: #999;">No grants yet. Use AI Discovery or click "+ Add Grant".</p>';
+        }
+
+        function renderIRB() {
+            const container = document.getElementById('irbList');
+            let html = '<table><thead><tr><th>IRB Number</th><th>Title</th><th>PI</th><th>Expiration</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+            
+            platformData.irb.forEach(irb => {
+                const daysUntilExpiry = irb.expirationDate ? 
+                    Math.ceil((new Date(irb.expirationDate) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+                
+                html += `
+                    <tr>
+                        <td>${irb.number}</td>
+                        <td>${irb.title || 'N/A'}</td>
+                        <td>${irb.pi || 'N/A'}</td>
+                        <td>${irb.expirationDate ? new Date(irb.expirationDate).toLocaleDateString() + ` (${daysUntilExpiry} days)` : 'N/A'}</td>
+                        <td><span class="status-badge ${irb.status ? irb.status.toLowerCase() : 'pending'}">${irb.status || 'Pending'}</span></td>
+                        <td>
+                            <button class="btn btn-info btn-sm" onclick="viewIRB('${irb.id}')">View</button>
+                            <button class="btn btn-primary btn-sm" onclick="editIRB('${irb.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteIRB('${irb.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = platformData.irb.length > 0 ? html : '<p style="text-align: center; color: #999;">No IRB protocols yet. Click "+ Add IRB Protocol".</p>';
+        }
+
+        function renderMeetings() {
+            const container = document.getElementById('meetingsList');
+            let html = '';
+            
+            platformData.meetings.slice().reverse().forEach(m => {
+                html += `
+                    <div class="card">
+                        <div class="card-header">
+                            <h4 class="card-title">${m.title}</h4>
+                            <span class="status-badge">${new Date(m.date).toLocaleDateString()}</span>
+                        </div>
+                        <p><strong>Project:</strong> ${m.project || 'General'}</p>
+                        <p><strong>Attendees:</strong> ${m.attendees || 'N/A'}</p>
+                        <p><strong>Notes:</strong> ${m.notes || 'No notes'}</p>
+                        <div style="margin-top: 10px;">
+                            <button class="btn btn-primary btn-sm" onclick="editMeeting('${m.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteMeeting('${m.id}')">Delete</button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = platformData.meetings.length > 0 ? html : '<p style="text-align: center; color: #999;">No meetings recorded yet.</p>';
+        }
+
+        function renderTasks() {
+            const container = document.getElementById('tasksList');
+            let html = '';
+            
+            platformData.tasks.filter(t => t.status !== 'completed').forEach(t => {
+                const isOverdue = new Date(t.dueDate) < new Date();
+                
+                html += `
+                    <div class="card">
+                        <div class="card-header">
+                            <h4 class="card-title">${t.title}</h4>
+                            <div>
+                                <span class="status-badge ${t.priority}">${t.priority}</span>
+                                ${isOverdue ? '<span class="status-badge overdue">OVERDUE</span>' : ''}
+                            </div>
+                        </div>
+                        <p><strong>Assignee:</strong> ${t.assignee}</p>
+                        <p><strong>Due:</strong> ${new Date(t.dueDate).toLocaleDateString()}</p>
+                        <p><strong>Project:</strong> ${t.project || 'General'}</p>
+                        <div>
+                            <button class="btn btn-success btn-sm" onclick="completeTask('${t.id}')">✓ Complete</button>
+                            <button class="btn btn-primary btn-sm" onclick="editTask('${t.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteTask('${t.id}')">Delete</button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html || '<p style="text-align: center; color: #999;">No active tasks.</p>';
+        }
+
+        function renderTeam() {
+            const container = document.getElementById('teamList');
+            let html = '<table><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Actions</th></tr></thead><tbody>';
+            
+            platformData.team.forEach(member => {
+                html += `
+                    <tr>
+                        <td>${member.name}</td>
+                        <td>${member.role || 'N/A'}</td>
+                        <td>${member.email || 'N/A'}</td>
+                        <td>
+                            <button class="btn btn-info btn-sm" onclick="viewTeamMember('${member.id}')">View</button>
+                            <button class="btn btn-primary btn-sm" onclick="editTeamMember('${member.id}')">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteTeamMember('${member.id}')">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = html || '<p style="text-align: center; color: #999;">No team members yet.</p>';
+        }
+
+        // ========================================
+        // DELETE FUNCTIONS
+        // ========================================
+        
+        function deleteProject(projectId) {
+            if (!confirm('Are you sure you want to delete this project? This will also delete all associated milestones, tasks, team assignments, and other project data.')) {
+                return;
+            }
+            
+            // Delete project
+            platformData.projects = platformData.projects.filter(p => p.id !== projectId);
+            
+            // Delete all associated data
+            platformData.projectTeamRoles = platformData.projectTeamRoles.filter(r => r.projectId !== projectId);
+            platformData.projectMeetings = platformData.projectMeetings.filter(m => m.projectId !== projectId);
+            platformData.projectTasks = platformData.projectTasks.filter(t => t.projectId !== projectId);
+            platformData.projectCompliance = platformData.projectCompliance.filter(c => c.projectId !== projectId);
+            platformData.projectCommunications = platformData.projectCommunications.filter(c => c.projectId !== projectId);
+            platformData.projectDocuments = platformData.projectDocuments.filter(d => d.projectId !== projectId);
+            platformData.projectUpdates = platformData.projectUpdates.filter(u => u.projectId !== projectId);
+            platformData.irbAmendments = platformData.irbAmendments.filter(a => a.projectId !== projectId);
+            platformData.trainingRecords = platformData.trainingRecords.filter(t => t.projectId !== projectId);
+            platformData.hipaaCompliance = platformData.hipaaCompliance.filter(h => h.projectId !== projectId);
+            platformData.milestones = platformData.milestones.filter(m => m.projectId !== projectId);
+            
+            saveData();
+            syncAllCalendars();
+            renderProjects();
+            updateDashboard();
+            
+            alert('✅ Project and all associated data deleted successfully!');
+        }
+        
+        // ========================================
+        // ADD/CREATE FORM FUNCTIONS
+        // ========================================
+        
+        function showAddProjectForm() {
+            const title = prompt('Project Title:');
+            if (!title) return;
+            
+            const pi = prompt('Principal Investigator:');
+            const type = prompt('Project Type (e.g., Clinical Trial, Observational Study):');
+            const startDate = prompt('Start Date (YYYY-MM-DD):');
+            const description = prompt('Project Description:');
+            
+            platformData.projects.push({
+                id: 'PROJ-' + Date.now(),
+                title,
+                pi,
+                type,
+                startDate,
+                endDate: null,
+                status: 'Planning',
+                description,
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            renderProjects();
+            updateDashboard();
+            alert('✅ Project created successfully!');
+        }
+        
+        function showAddTeamRoleForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            // Show available team members
+            if (platformData.team.length === 0) {
+                alert('Please add team members first in the Team tab');
+                return;
+            }
+            
+            const memberName = prompt('Enter team member name:\n\nAvailable members:\n' + 
+                platformData.team.map(t => `- ${t.name}`).join('\n'));
+            if (!memberName) return;
+            
+            const member = platformData.team.find(t => t.name.toLowerCase().includes(memberName.toLowerCase()));
+            if (!member) {
+                alert('Team member not found. Please add them in the Team tab first.');
+                return;
+            }
+            
+            const role = prompt('Role on this project (e.g., Research Coordinator, Co-Investigator):');
+            if (!role) return;
+            
+            const startDate = prompt('Start Date (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
+            
+            platformData.projectTeamRoles.push({
+                id: 'ROLE-' + Date.now(),
+                projectId,
+                memberId: member.id,
+                memberName: member.name,
+                role,
+                startDate: startDate || new Date().toISOString().split('T')[0],
+                endDate: null
+            });
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Team Assignment',
+                description: `${member.name} assigned as ${role}`,
+                details: `Start date: ${startDate}`
+            });
+            
+            saveData();
+            updateProjectTeamRoles(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Team member assigned successfully!');
+        }
+        
+        function showAddMilestoneForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const title = prompt('Milestone Title:');
+            if (!title) return;
+            
+            const dueDate = prompt('Due Date (YYYY-MM-DD):');
+            if (!dueDate) return;
+            
+            const description = prompt('Description (optional):');
+            
+            platformData.milestones.push({
+                id: 'MILE-' + Date.now(),
+                projectId,
+                title,
+                dueDate,
+                description: description || '',
+                status: 'pending',
+                createdAt: new Date().toISOString()
+            });
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Milestone Created',
+                description: title,
+                details: `Due: ${new Date(dueDate).toLocaleDateString()}`
+            });
+            
+            saveData();
+            syncAllCalendars();
+            updateProjectMilestones(projectId);
+            updateProjectCounts(projectId);
+            updateProjectOverview(projectId);
+            alert('✅ Milestone created and synced to calendar!');
+        }
+        
+        function showAddProjectMeetingForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const title = prompt('Meeting Title:');
+            if (!title) return;
+            
+            const date = prompt('Meeting Date (YYYY-MM-DD):');
+            if (!date) return;
+            
+            const purpose = prompt('Purpose:');
+            const attendees = prompt('Attendees (comma-separated):');
+            const notes = prompt('Notes:');
+            const actionItems = prompt('Action Items:');
+            
+            platformData.projectMeetings.push({
+                id: 'PMEET-' + Date.now(),
+                projectId,
+                title,
+                date,
+                purpose: purpose || '',
+                attendees: attendees || '',
+                notes: notes || '',
+                actionItems: actionItems || '',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            updateProjectMeetingsTasks(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Meeting logged successfully!');
+        }
+        
+        function showAddProjectTaskForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const title = prompt('Task Title:');
+            if (!title) return;
+            
+            const assignee = prompt('Assignee:');
+            const dueDate = prompt('Due Date (YYYY-MM-DD):');
+            const priority = prompt('Priority (high/medium/low):', 'medium');
+            const description = prompt('Description:');
+            
+            platformData.projectTasks.push({
+                id: 'PTASK-' + Date.now(),
+                projectId,
+                title,
+                assignee: assignee || 'Unassigned',
+                dueDate: dueDate || '',
+                priority: priority || 'medium',
+                status: 'pending',
+                description: description || '',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            updateProjectMeetingsTasks(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Task created successfully!');
+        }
+        
+        function showAddComplianceForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const type = prompt('Compliance Type (e.g., Safety Report, Protocol Deviation):');
+            if (!type) return;
+            
+            const description = prompt('Description:');
+            const status = prompt('Status (pending/completed):', 'pending');
+            const notes = prompt('Notes (optional):');
+            
+            platformData.projectCompliance.push({
+                id: 'COMP-' + Date.now(),
+                projectId,
+                type,
+                description: description || '',
+                status: status || 'pending',
+                date: new Date().toISOString().split('T')[0],
+                notes: notes || ''
+            });
+            
+            saveData();
+            updateProjectCompliance(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Compliance item added!');
+        }
+        
+        function showAddIRBAmendmentForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const number = prompt('Amendment Number:');
+            if (!number) return;
+            
+            const submissionDate = prompt('Submission Date (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
+            const description = prompt('Amendment Description:');
+            const status = prompt('Status (submitted/under review/approved):', 'submitted');
+            
+            platformData.irbAmendments.push({
+                id: 'AMEND-' + Date.now(),
+                projectId,
+                irbId: null, // Could be linked to IRB protocol
+                number,
+                submissionDate: submissionDate || new Date().toISOString().split('T')[0],
+                description: description || '',
+                status: status || 'submitted',
+                approvalDate: null
+            });
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'IRB Amendment',
+                description: `Amendment ${number} submitted`,
+                details: description || ''
+            });
+            
+            saveData();
+            updateProjectCompliance(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ IRB amendment recorded!');
+        }
+        
+        function showAddHIPAAItemForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const checklistItem = prompt('HIPAA Checklist Item (e.g., "Privacy training completed", "PHI storage verified"):');
+            if (!checklistItem) return;
+            
+            const status = prompt('Status (pending/completed):', 'pending');
+            const completedDate = status === 'completed' ? prompt('Completion Date (YYYY-MM-DD):', new Date().toISOString().split('T')[0]) : null;
+            const notes = prompt('Notes (optional):');
+            
+            platformData.hipaaCompliance.push({
+                id: 'HIPAA-' + Date.now(),
+                projectId,
+                checklistItem,
+                status: status || 'pending',
+                completedDate,
+                notes: notes || ''
+            });
+            
+            saveData();
+            updateProjectCompliance(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ HIPAA checklist item added!');
+        }
+        
+        function showAddTrainingForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            // Get team members on this project
+            const projectTeam = platformData.projectTeamRoles.filter(r => r.projectId === projectId);
+            if (projectTeam.length === 0) {
+                alert('Please assign team members to this project first');
+                return;
+            }
+            
+            const memberName = prompt('Team member name:\n\nProject team:\n' + 
+                projectTeam.map(t => `- ${t.memberName}`).join('\n'));
+            if (!memberName) return;
+            
+            const member = platformData.team.find(t => t.name.toLowerCase().includes(memberName.toLowerCase()));
+            if (!member) {
+                alert('Team member not found');
+                return;
+            }
+            
+            const type = prompt('Training Type (e.g., CITI, GCP, HIPAA, IRB):');
+            if (!type) return;
+            
+            const completionDate = prompt('Completion Date (YYYY-MM-DD):');
+            const expirationDate = prompt('Expiration Date (YYYY-MM-DD) - leave empty if no expiration:');
+            const certificateNumber = prompt('Certificate Number (optional):');
+            
+            platformData.trainingRecords.push({
+                id: 'TRAIN-' + Date.now(),
+                projectId,
+                memberId: member.id,
+                memberName: member.name,
+                type,
+                completionDate: completionDate || new Date().toISOString().split('T')[0],
+                expirationDate: expirationDate || null,
+                certificateNumber: certificateNumber || ''
+            });
+            
+            saveData();
+            updateProjectCompliance(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Training record added!');
+        }
+        
+        function showAddCommunicationForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const stakeholder = prompt('Stakeholder Name (e.g., "Dr. Smith - Sponsor", "IRB Coordinator"):');
+            if (!stakeholder) return;
+            
+            const type = prompt('Communication Type (email/meeting/phone):', 'email');
+            const date = prompt('Date (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
+            const subject = prompt('Subject:');
+            const summary = prompt('Summary:');
+            const followup = confirm('Follow-up needed?');
+            const followupDate = followup ? prompt('Follow-up Date (YYYY-MM-DD):') : null;
+            
+            platformData.projectCommunications.push({
+                id: 'COMM-' + Date.now(),
+                projectId,
+                stakeholder,
+                type: type || 'email',
+                date: date || new Date().toISOString().split('T')[0],
+                subject: subject || '',
+                summary: summary || '',
+                followup,
+                followupDate
+            });
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Communication Logged',
+                description: `Communication with ${stakeholder}`,
+                details: subject || ''
+            });
+            
+            saveData();
+            updateProjectCommunications(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Communication logged!');
+        }
+        
+        function showAddDocumentForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const name = prompt('Document Name (include version if applicable):');
+            if (!name) return;
+            
+            const type = prompt('Document Type (protocol/consent/report/publication/presentation/other):', 'other');
+            const description = prompt('Description:');
+            const url = prompt('URL or file path (optional):');
+            
+            platformData.projectDocuments.push({
+                id: 'DOC-' + Date.now(),
+                projectId,
+                name,
+                type: type || 'other',
+                uploadDate: new Date().toISOString().split('T')[0],
+                description: description || '',
+                url: url || ''
+            });
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Document Added',
+                description: name,
+                details: `Type: ${type}`
+            });
+            
+            saveData();
+            updateProjectDocuments(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Document added!');
+        }
+        
+        function showAddUpdateForm() {
+            const projectId = platformData.settings.selectedProject;
+            if (!projectId) {
+                alert('Error: No project selected');
+                return;
+            }
+            
+            const type = prompt('Update Type (e.g., Status Change, Budget Update, Risk Identified):');
+            if (!type) return;
+            
+            const description = prompt('Description:');
+            if (!description) return;
+            
+            const details = prompt('Additional Details (optional):');
+            const author = prompt('Your Name:');
+            
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId,
+                date: new Date().toISOString(),
+                author: author || 'User',
+                type,
+                description,
+                details: details || ''
+            });
+            
+            saveData();
+            updateProjectUpdates(projectId);
+            updateProjectCounts(projectId);
+            alert('✅ Update logged!');
+        }
+        
+        // ========================================
+        // GENERAL (NON-PROJECT) ADD FORMS
+        // ========================================
+        
+        function showAddConferenceForm() {
+            const name = prompt('Conference Name:');
+            if (!name) return;
+            
+            const location = prompt('Location:');
+            const date = prompt('Conference Date (YYYY-MM-DD):');
+            const deadline = prompt('Abstract Submission Deadline (YYYY-MM-DD):');
+            const url = prompt('Website URL (optional):');
+            
+            platformData.conferences.push({
+                id: 'CONF-' + Date.now(),
+                name,
+                location: location || '',
+                date: date || '',
+                deadline: deadline || '',
+                url: url || '',
+                status: 'planning',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            renderConferences();
+            updateDashboard();
+            alert('✅ Conference added and synced to calendar!');
+        }
+        
+        function showAddGrantForm() {
+            const name = prompt('Grant Name:');
+            if (!name) return;
+            
+            const agency = prompt('Funding Agency:');
+            const deadline = prompt('Deadline (YYYY-MM-DD):');
+            const amount = prompt('Funding Amount Range (e.g., "$75K - $150K"):');
+            const focus = prompt('Research Focus/Keywords:');
+            
+            platformData.grants.push({
+                id: 'GRANT-' + Date.now(),
+                name,
+                agency: agency || '',
+                deadline: deadline || '',
+                amount: amount || '',
+                focus: focus || '',
+                status: 'considering',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            renderGrants();
+            updateDashboard();
+            alert('✅ Grant opportunity added and synced to calendar!');
+        }
+        
+        function showAddIRBForm() {
+            const protocolNumber = prompt('IRB Protocol Number:');
+            if (!protocolNumber) return;
+            
+            const title = prompt('Study Title:');
+            const pi = prompt('Principal Investigator:');
+            const approvalDate = prompt('Approval Date (YYYY-MM-DD):');
+            const expirationDate = prompt('Expiration Date (YYYY-MM-DD):');
+            
+            platformData.irb.push({
+                id: 'IRB-' + Date.now(),
+                protocolNumber,
+                title: title || '',
+                pi: pi || '',
+                approvalDate: approvalDate || '',
+                expirationDate: expirationDate || '',
+                status: 'Active',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            renderIRB();
+            updateDashboard();
+            alert('✅ IRB protocol added and expiration date synced to calendar!');
+        }
+        
+        function showAddMeetingForm() {
+            const title = prompt('Meeting Title:');
+            if (!title) return;
+            
+            const date = prompt('Date (YYYY-MM-DD):');
+            const time = prompt('Time (e.g., 2:00 PM):');
+            const location = prompt('Location:');
+            const attendees = prompt('Attendees (comma-separated):');
+            
+            platformData.meetings.push({
+                id: 'MEET-' + Date.now(),
+                title,
+                date: date || new Date().toISOString().split('T')[0],
+                time: time || '',
+                location: location || '',
+                attendees: attendees || '',
+                status: 'scheduled',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            renderMeetings();
+            updateDashboard();
+            alert('✅ Meeting scheduled and synced to calendar!');
+        }
+        
+        function showAddTaskForm() {
+            const title = prompt('Task Title:');
+            if (!title) return;
+            
+            const assignee = prompt('Assignee:');
+            const dueDate = prompt('Due Date (YYYY-MM-DD):');
+            const priority = prompt('Priority (high/medium/low):', 'medium');
+            const description = prompt('Description:');
+            
+            platformData.tasks.push({
+                id: 'TASK-' + Date.now(),
+                title,
+                assignee: assignee || 'Unassigned',
+                dueDate: dueDate || '',
+                priority: priority || 'medium',
+                status: 'pending',
+                description: description || '',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            syncAllCalendars();
+            renderTasks();
+            updateDashboard();
+            alert('✅ Task created and synced to calendar!');
+        }
+        
+        function showAddTeamMemberForm() {
+            const name = prompt('Team Member Name:');
+            if (!name) return;
+            
+            const role = prompt('General Role (e.g., Research Coordinator, Research Assistant):');
+            const email = prompt('Email:');
+            
+            platformData.team.push({
+                id: 'TEAM-' + Date.now(),
+                name,
+                role: role || '',
+                email: email || '',
+                createdAt: new Date().toISOString()
+            });
+            
+            saveData();
+            renderTeam();
+            alert('✅ Team member added! You can now assign them to projects.');
+        }
+        
+        // ========================================
+        // COMPLETION FUNCTIONS
+        // ========================================
+        
+        function completeMilestone(milestoneId) {
+            const milestone = platformData.milestones.find(m => m.id === milestoneId);
+            if (!milestone) return;
+            
+            milestone.status = 'completed';
+            milestone.completedAt = new Date().toISOString();
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId: milestone.projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Milestone Completed',
+                description: milestone.title,
+                details: ''
+            });
+            
+            saveData();
+            syncAllCalendars();
+            updateProjectMilestones(milestone.projectId);
+            updateProjectOverview(milestone.projectId);
+            updateProjectCounts(milestone.projectId);
+            alert('✅ Milestone marked as complete!');
+        }
+        
+        function completeProjectTask(taskId) {
+            const task = platformData.projectTasks.find(t => t.id === taskId);
+            if (!task) return;
+            
+            task.status = 'completed';
+            task.completedAt = new Date().toISOString();
+            
+            // Log update
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId: task.projectId,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Task Completed',
+                description: task.title,
+                details: `Assignee: ${task.assignee}`
+            });
+            
+            saveData();
+            syncAllCalendars();
+            updateProjectMeetingsTasks(task.projectId);
+            updateProjectCounts(task.projectId);
+            alert('✅ Task marked as complete!');
+        }
+        
+        function deleteMeeting(id) {
+            if (confirm('Delete this meeting?')) {
+                platformData.meetings = platformData.meetings.filter(m => m.id !== id);
+                saveData();
+                syncAllCalendars();
+                renderMeetings();
+                updateDashboard();
+            }
+        }
+
+        function deleteTask(id) {
+            if (confirm('Delete this task?')) {
+                platformData.tasks = platformData.tasks.filter(t => t.id !== id);
+                saveData();
+                syncAllCalendars();
+                renderTasks();
+                updateDashboard();
+            }
+        }
+
+        function deleteTeamMember(id) {
+            if (confirm('Delete this team member?')) {
+                platformData.team = platformData.team.filter(t => t.id !== id);
+                saveData();
+                renderTeam();
+            }
+        }
+
+        function completeTask(id) {
+            const task = platformData.tasks.find(t => t.id === id);
+            if (task) {
+                task.status = 'completed';
+                task.completedAt = new Date().toISOString();
+                saveData();
+                syncAllCalendars();
+                renderTasks();
+                updateDashboard();
+            }
+        }
+
+        // ========================================
+        // VIEW FUNCTIONS - Display Detailed Information
+        // ========================================
+        
+        function closeViewModal() {
+            document.getElementById('viewModal').classList.remove('active');
+        }
+        
+        function showViewModal(title, content) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalBody').innerHTML = content;
+            document.getElementById('viewModal').classList.add('active');
+        }
+        
+        function viewProject(id) {
+            const project = platformData.projects.find(p => p.id === id);
+            if (!project) {
+                alert('Project not found');
+                return;
+            }
+            
+            const teamCount = platformData.projectTeamRoles.filter(r => r.projectId === id).length;
+            const milestoneCount = platformData.milestones.filter(m => m.projectId === id).length;
+            const taskCount = platformData.projectTasks.filter(t => t.projectId === id).length;
+            
+            const content = `
+                <div class="detail-row">
+                    <div class="detail-label">Project ID:</div>
+                    <div class="detail-value">${project.id}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Title:</div>
+                    <div class="detail-value"><strong>${project.title}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Principal Investigator:</div>
+                    <div class="detail-value">${project.pi || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Project Type:</div>
+                    <div class="detail-value">${project.type || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Status:</div>
+                    <div class="detail-value"><span class="status-badge ${project.status ? project.status.toLowerCase() : 'pending'}">${project.status || 'Pending'}</span></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Start Date:</div>
+                    <div class="detail-value">${project.startDate ? new Date(project.startDate).toLocaleDateString() : 'Not set'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">End Date:</div>
+                    <div class="detail-value">${project.endDate ? new Date(project.endDate).toLocaleDateString() : 'Ongoing'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Description:</div>
+                    <div class="detail-value">${project.description || 'No description provided'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Team Members:</div>
+                    <div class="detail-value">${teamCount} assigned</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Milestones:</div>
+                    <div class="detail-value">${milestoneCount} defined</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Active Tasks:</div>
+                    <div class="detail-value">${taskCount} tasks</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Created:</div>
+                    <div class="detail-value">${project.createdAt ? new Date(project.createdAt).toLocaleDateString() : 'Unknown'}</div>
+                </div>
+                <div style="margin-top: 20px; text-align: center;">
+                    <button class="btn btn-primary" onclick="closeViewModal(); viewProjectDetails('${id}')">📊 View Full Project Details</button>
+                </div>
+            `;
+            
+            showViewModal('Project Details', content);
+        }
+        
+        function viewConference(id) {
+            const conf = platformData.conferences.find(c => c.id === id);
+            if (!conf) {
+                alert('Conference not found');
+                return;
+            }
+            
+            const daysUntilDeadline = conf.deadline ? Math.ceil((new Date(conf.deadline) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+            const daysUntilConf = conf.date ? Math.ceil((new Date(conf.date) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+            
+            const content = `
+                <div class="detail-row">
+                    <div class="detail-label">Conference Name:</div>
+                    <div class="detail-value"><strong>${conf.name}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Location:</div>
+                    <div class="detail-value">${conf.location || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Conference Date:</div>
+                    <div class="detail-value">${conf.date ? new Date(conf.date).toLocaleDateString() : 'Not set'} ${daysUntilConf ? `(in ${daysUntilConf} days)` : ''}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Submission Deadline:</div>
+                    <div class="detail-value">
+                        ${conf.deadline ? new Date(conf.deadline).toLocaleDateString() : 'Not set'}
+                        ${daysUntilDeadline !== null ? `<br><span class="status-badge ${daysUntilDeadline < 7 ? 'urgent' : daysUntilDeadline < 30 ? 'soon' : 'upcoming'}">${daysUntilDeadline} days remaining</span>` : ''}
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Focus Areas:</div>
+                    <div class="detail-value">${conf.focus || 'Not specified'}</div>
+                </div>
+                ${conf.url ? `
+                <div class="detail-row">
+                    <div class="detail-label">Website:</div>
+                    <div class="detail-value"><a href="${conf.url}" target="_blank">${conf.url}</a></div>
+                </div>
+                ` : ''}
+                ${conf.aiMatch ? `
+                <div class="detail-row">
+                    <div class="detail-label">AI Match Score:</div>
+                    <div class="detail-value"><span class="ai-match-badge">${conf.aiMatch}%</span></div>
+                </div>
+                ` : ''}
+                <div class="detail-row">
+                    <div class="detail-label">Status:</div>
+                    <div class="detail-value"><span class="status-badge ${conf.status ? conf.status.toLowerCase() : 'pending'}">${conf.status || 'Planning'}</span></div>
+                </div>
+            `;
+            
+            showViewModal('Conference Details', content);
+        }
+        
+        function viewGrant(id) {
+            const grant = platformData.grants.find(g => g.id === id);
+            if (!grant) {
+                alert('Grant not found');
+                return;
+            }
+            
+            const daysUntilDeadline = grant.deadline ? Math.ceil((new Date(grant.deadline) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+            
+            const content = `
+                <div class="detail-row">
+                    <div class="detail-label">Grant Name:</div>
+                    <div class="detail-value"><strong>${grant.name}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Funding Agency:</div>
+                    <div class="detail-value">${grant.agency || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Award Amount:</div>
+                    <div class="detail-value"><strong style="color: var(--success-green);">${grant.amount || 'Not specified'}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Application Deadline:</div>
+                    <div class="detail-value">
+                        ${grant.deadline ? new Date(grant.deadline).toLocaleDateString() : 'Not set'}
+                        ${daysUntilDeadline !== null ? `<br><span class="status-badge ${daysUntilDeadline < 14 ? 'urgent' : daysUntilDeadline < 30 ? 'soon' : 'upcoming'}">${daysUntilDeadline} days remaining</span>` : ''}
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Focus Areas:</div>
+                    <div class="detail-value">${grant.focus || 'Not specified'}</div>
+                </div>
+                ${grant.url ? `
+                <div class="detail-row">
+                    <div class="detail-label">More Information:</div>
+                    <div class="detail-value"><a href="${grant.url}" target="_blank">${grant.url}</a></div>
+                </div>
+                ` : ''}
+                ${grant.aiMatch ? `
+                <div class="detail-row">
+                    <div class="detail-label">AI Match Score:</div>
+                    <div class="detail-value"><span class="ai-match-badge">${grant.aiMatch}%</span></div>
+                </div>
+                ` : ''}
+                <div class="detail-row">
+                    <div class="detail-label">Status:</div>
+                    <div class="detail-value"><span class="status-badge ${grant.status ? grant.status.toLowerCase() : 'considering'}">${grant.status || 'Considering'}</span></div>
+                </div>
+                ${grant.notes ? `
+                <div class="detail-row">
+                    <div class="detail-label">Notes:</div>
+                    <div class="detail-value">${grant.notes}</div>
+                </div>
+                ` : ''}
+            `;
+            
+            showViewModal('Grant Opportunity Details', content);
+        }
+        
+        function viewIRB(id) {
+            const irb = platformData.irb.find(i => i.id === id);
+            if (!irb) {
+                alert('IRB protocol not found');
+                return;
+            }
+            
+            const daysUntilExpiry = irb.expirationDate ? Math.ceil((new Date(irb.expirationDate) - new Date()) / (1000 * 60 * 60 * 24)) : null;
+            
+            const content = `
+                <div class="detail-row">
+                    <div class="detail-label">Protocol Number:</div>
+                    <div class="detail-value"><strong>${irb.protocolNumber || irb.number || 'Not specified'}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Study Title:</div>
+                    <div class="detail-value">${irb.title || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Principal Investigator:</div>
+                    <div class="detail-value">${irb.pi || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Approval Date:</div>
+                    <div class="detail-value">${irb.approvalDate ? new Date(irb.approvalDate).toLocaleDateString() : 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Expiration Date:</div>
+                    <div class="detail-value">
+                        ${irb.expirationDate ? new Date(irb.expirationDate).toLocaleDateString() : 'Not set'}
+                        ${daysUntilExpiry !== null ? (
+                            daysUntilExpiry < 0 ? `<br><span class="status-badge overdue">EXPIRED ${Math.abs(daysUntilExpiry)} days ago</span>` :
+                            daysUntilExpiry < 30 ? `<br><span class="status-badge urgent">Expires in ${daysUntilExpiry} days</span>` :
+                            daysUntilExpiry < 90 ? `<br><span class="status-badge soon">Expires in ${daysUntilExpiry} days</span>` :
+                            `<br><span class="status-badge upcoming">${daysUntilExpiry} days remaining</span>`
+                        ) : ''}
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Status:</div>
+                    <div class="detail-value"><span class="status-badge ${irb.status ? irb.status.toLowerCase() : 'pending'}">${irb.status || 'Pending'}</span></div>
+                </div>
+                ${irb.notes ? `
+                <div class="detail-row">
+                    <div class="detail-label">Notes:</div>
+                    <div class="detail-value">${irb.notes}</div>
+                </div>
+                ` : ''}
+                <div class="detail-row">
+                    <div class="detail-label">Created:</div>
+                    <div class="detail-value">${irb.createdAt ? new Date(irb.createdAt).toLocaleDateString() : 'Unknown'}</div>
+                </div>
+            `;
+            
+            showViewModal('IRB Protocol Details', content);
+        }
+        
+        function viewTeamMember(id) {
+            const member = platformData.team.find(t => t.id === id);
+            if (!member) {
+                alert('Team member not found');
+                return;
+            }
+            
+            // Find all projects this member is assigned to
+            const projectRoles = platformData.projectTeamRoles.filter(r => r.memberId === id);
+            const projectsHtml = projectRoles.map(role => {
+                const project = platformData.projects.find(p => p.id === role.projectId);
+                return `<li><strong>${project ? project.title : 'Unknown Project'}</strong> - ${role.role}</li>`;
+            }).join('');
+            
+            const content = `
+                <div class="detail-row">
+                    <div class="detail-label">Name:</div>
+                    <div class="detail-value"><strong>${member.name}</strong></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">General Role:</div>
+                    <div class="detail-value">${member.role || 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Email:</div>
+                    <div class="detail-value">${member.email ? `<a href="mailto:${member.email}">${member.email}</a>` : 'Not specified'}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Project Assignments:</div>
+                    <div class="detail-value">
+                        ${projectRoles.length > 0 ? `
+                            <ul style="margin: 5px 0; padding-left: 20px;">
+                                ${projectsHtml}
+                            </ul>
+                        ` : 'Not currently assigned to any projects'}
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Added:</div>
+                    <div class="detail-value">${member.createdAt ? new Date(member.createdAt).toLocaleDateString() : 'Unknown'}</div>
+                </div>
+            `;
+            
+            showViewModal('Team Member Details', content);
+        }
+
+
+        // ========================================
+        // MISSING DELETE FUNCTIONS
+        // ========================================
+        
+        function deleteConference(id) {
+            if (confirm('Delete this conference?')) {
+                platformData.conferences = platformData.conferences.filter(c => c.id !== id);
+                saveData();
+                syncAllCalendars();
+                renderConferences();
+                updateDashboard();
+                alert('✅ Conference deleted successfully!');
+            }
+        }
+
+        function deleteGrant(id) {
+            if (confirm('Delete this grant opportunity?')) {
+                platformData.grants = platformData.grants.filter(g => g.id !== id);
+                saveData();
+                syncAllCalendars();
+                renderGrants();
+                updateDashboard();
+                alert('✅ Grant deleted successfully!');
+            }
+        }
+
+        function deleteIRB(id) {
+            if (confirm('Delete this IRB protocol?')) {
+                platformData.irb = platformData.irb.filter(i => i.id !== id);
+                saveData();
+                syncAllCalendars();
+                renderIRB();
+                updateDashboard();
+                alert('✅ IRB protocol deleted successfully!');
+            }
+        }
+
+        function deleteProjectDocument(id) {
+            if (confirm('Delete this document?')) {
+                const doc = platformData.projectDocuments.find(d => d.id === id);
+                if (doc) {
+                    platformData.projectDocuments = platformData.projectDocuments.filter(d => d.id !== id);
+                    saveData();
+                    updateProjectDocuments(doc.projectId);
+                    alert('✅ Document deleted successfully!');
+                }
+            }
+        }
+
+        function deleteProjectMeeting(id) {
+            if (confirm('Delete this meeting?')) {
+                const meeting = platformData.projectMeetings.find(m => m.id === id);
+                if (meeting) {
+                    platformData.projectMeetings = platformData.projectMeetings.filter(m => m.id !== id);
+                    saveData();
+                    syncAllCalendars();
+                    updateProjectMeetingsTasks(meeting.projectId);
+                    alert('✅ Meeting deleted successfully!');
+                }
+            }
+        }
+
+        function deleteProjectTask(id) {
+            if (confirm('Delete this task?')) {
+                const task = platformData.projectTasks.find(t => t.id === id);
+                if (task) {
+                    platformData.projectTasks = platformData.projectTasks.filter(t => t.id !== id);
+                    saveData();
+                    syncAllCalendars();
+                    updateProjectMeetingsTasks(task.projectId);
+                    updateProjectCounts(task.projectId);
+                    alert('✅ Task deleted successfully!');
+                }
+            }
+        }
+
+        function deleteProjectTeamRole(id) {
+            if (confirm('Remove this team member from the project?')) {
+                const role = platformData.projectTeamRoles.find(r => r.id === id);
+                if (role) {
+                    platformData.projectTeamRoles = platformData.projectTeamRoles.filter(r => r.id !== id);
+                    saveData();
+                    updateProjectTeamRoles(role.projectId);
+                    updateProjectCounts(role.projectId);
+                    alert('✅ Team member removed from project!');
+                }
+            }
+        }
+
+        function deleteProjectCommunication(id) {
+            if (confirm('Delete this communication record?')) {
+                const comm = platformData.projectCommunications.find(c => c.id === id);
+                if (comm) {
+                    platformData.projectCommunications = platformData.projectCommunications.filter(c => c.id !== id);
+                    saveData();
+                    updateProjectCommunications(comm.projectId);
+                    alert('✅ Communication record deleted!');
+                }
+            }
+        }
+
+        function deleteProjectUpdate(id) {
+            if (confirm('Delete this project update?')) {
+                const update = platformData.projectUpdates.find(u => u.id === id);
+                if (update) {
+                    platformData.projectUpdates = platformData.projectUpdates.filter(u => u.id !== id);
+                    saveData();
+                    updateProjectUpdates(update.projectId);
+                    alert('✅ Project update deleted!');
+                }
+            }
+        }
+
+        // ========================================
+        // EDIT FUNCTIONS FOR PROJECTS AND ITEMS
+        // ========================================
+
+        function editProject(projectId) {
+            const project = platformData.projects.find(p => p.id === projectId);
+            if (!project) return;
+
+            const title = prompt('Project Title:', project.title);
+            if (title === null) return; // User cancelled
+
+            const pi = prompt('Principal Investigator:', project.pi || '');
+            const type = prompt('Project Type:', project.type || '');
+            const status = prompt('Status (Planning/Active/On Hold/Completed):', project.status || 'Planning');
+            const description = prompt('Project Description:', project.description || '');
+
+            // Update project
+            project.title = title || project.title;
+            project.pi = pi !== null ? pi : project.pi;
+            project.type = type !== null ? type : project.type;
+            project.status = status !== null ? status : project.status;
+            project.description = description !== null ? description : project.description;
+
+            // Log the change
+            platformData.projectUpdates.push({
+                id: 'UPD-' + Date.now(),
+                projectId: project.id,
+                date: new Date().toISOString(),
+                author: 'System',
+                type: 'Project Updated',
+                description: 'Project details modified',
+                details: `Title: ${project.title}`
+            });
+
+            saveData();
+            renderProjects();
+            if (platformData.settings.selectedProject === projectId) {
+                viewProjectDetails(projectId);
+            }
+            alert('✅ Project updated successfully!');
+        }
+
+        function editConference(id) {
+            const conf = platformData.conferences.find(c => c.id === id);
+            if (!conf) return;
+
+            const name = prompt('Conference Name:', conf.name);
+            if (name === null) return;
+
+            const location = prompt('Location:', conf.location || '');
+            const date = prompt('Date (YYYY-MM-DD):', conf.date || '');
+            const deadline = prompt('Submission Deadline (YYYY-MM-DD):', conf.deadline || '');
+
+            conf.name = name || conf.name;
+            conf.location = location !== null ? location : conf.location;
+            conf.date = date !== null ? date : conf.date;
+            conf.deadline = deadline !== null ? deadline : conf.deadline;
+
+            saveData();
+            syncAllCalendars();
+            renderConferences();
+            alert('✅ Conference updated successfully!');
+        }
+
+        function editGrant(id) {
+            const grant = platformData.grants.find(g => g.id === id);
+            if (!grant) return;
+
+            const name = prompt('Grant Name:', grant.name);
+            if (name === null) return;
+
+            const agency = prompt('Agency:', grant.agency || '');
+            const deadline = prompt('Deadline (YYYY-MM-DD):', grant.deadline || '');
+            const amount = prompt('Amount:', grant.amount || '');
+
+            grant.name = name || grant.name;
+            grant.agency = agency !== null ? agency : grant.agency;
+            grant.deadline = deadline !== null ? deadline : grant.deadline;
+            grant.amount = amount !== null ? amount : grant.amount;
+
+            saveData();
+            syncAllCalendars();
+            renderGrants();
+            alert('✅ Grant updated successfully!');
+        }
+
+        function editIRB(id) {
+            const irb = platformData.irb.find(i => i.id === id);
+            if (!irb) return;
+
+            const protocolNumber = prompt('IRB Protocol Number:', irb.protocolNumber || irb.number || '');
+            if (protocolNumber === null) return;
+
+            const title = prompt('Study Title:', irb.title || '');
+            const pi = prompt('Principal Investigator:', irb.pi || '');
+            const expirationDate = prompt('Expiration Date (YYYY-MM-DD):', irb.expirationDate || '');
+            const status = prompt('Status (Active/Pending/Expired):', irb.status || 'Active');
+
+            irb.protocolNumber = protocolNumber || irb.protocolNumber;
+            irb.number = protocolNumber || irb.number;
+            irb.title = title !== null ? title : irb.title;
+            irb.pi = pi !== null ? pi : irb.pi;
+            irb.expirationDate = expirationDate !== null ? expirationDate : irb.expirationDate;
+            irb.status = status !== null ? status : irb.status;
+
+            saveData();
+            syncAllCalendars();
+            renderIRB();
+            alert('✅ IRB protocol updated successfully!');
+        }
+
+        function editMeeting(id) {
+            const meeting = platformData.meetings.find(m => m.id === id);
+            if (!meeting) return;
+
+            const title = prompt('Meeting Title:', meeting.title);
+            if (title === null) return;
+
+            const date = prompt('Date (YYYY-MM-DD):', meeting.date || '');
+            const time = prompt('Time:', meeting.time || '');
+            const location = prompt('Location:', meeting.location || '');
+
+            meeting.title = title || meeting.title;
+            meeting.date = date !== null ? date : meeting.date;
+            meeting.time = time !== null ? time : meeting.time;
+            meeting.location = location !== null ? location : meeting.location;
+
+            saveData();
+            syncAllCalendars();
+            renderMeetings();
+            alert('✅ Meeting updated successfully!');
+        }
+
+        function editTask(id) {
+            const task = platformData.tasks.find(t => t.id === id);
+            if (!task) return;
+
+            const title = prompt('Task Title:', task.title);
+            if (title === null) return;
+
+            const assignee = prompt('Assignee:', task.assignee || '');
+            const dueDate = prompt('Due Date (YYYY-MM-DD):', task.dueDate || '');
+            const priority = prompt('Priority (high/medium/low):', task.priority || 'medium');
+
+            task.title = title || task.title;
+            task.assignee = assignee !== null ? assignee : task.assignee;
+            task.dueDate = dueDate !== null ? dueDate : task.dueDate;
+            task.priority = priority !== null ? priority : task.priority;
+
+            saveData();
+            syncAllCalendars();
+            renderTasks();
+            alert('✅ Task updated successfully!');
+        }
+
+        function editTeamMember(id) {
+            const member = platformData.team.find(t => t.id === id);
+            if (!member) return;
+
+            const name = prompt('Team Member Name:', member.name);
+            if (name === null) return;
+
+            const role = prompt('Role:', member.role || '');
+            const email = prompt('Email:', member.email || '');
+
+            member.name = name || member.name;
+            member.role = role !== null ? role : member.role;
+            member.email = email !== null ? email : member.email;
+
+            saveData();
+            renderTeam();
+            alert('✅ Team member updated successfully!');
+        }
+
+        function editProjectDocument(id) {
+            const doc = platformData.projectDocuments.find(d => d.id === id);
+            if (!doc) return;
+
+            const name = prompt('Document Name:', doc.name);
+            if (name === null) return;
+
+            const type = prompt('Document Type:', doc.type || '');
+            const url = prompt('Document URL/Location:', doc.url || '');
+            const notes = prompt('Notes:', doc.notes || '');
+
+            doc.name = name || doc.name;
+            doc.type = type !== null ? type : doc.type;
+            doc.url = url !== null ? url : doc.url;
+            doc.notes = notes !== null ? notes : doc.notes;
+
+            saveData();
+            updateProjectDocuments(doc.projectId);
+            alert('✅ Document updated successfully!');
+        }
+
+        function editProjectTask(id) {
+            const task = platformData.projectTasks.find(t => t.id === id);
+            if (!task) return;
+
+            const title = prompt('Task Title:', task.title);
+            if (title === null) return;
+
+            const assignee = prompt('Assignee:', task.assignee || '');
+            const dueDate = prompt('Due Date (YYYY-MM-DD):', task.dueDate || '');
+            const priority = prompt('Priority (high/medium/low):', task.priority || 'medium');
+
+            task.title = title || task.title;
+            task.assignee = assignee !== null ? assignee : task.assignee;
+            task.dueDate = dueDate !== null ? dueDate : task.dueDate;
+            task.priority = priority !== null ? priority : task.priority;
+
+            saveData();
+            syncAllCalendars();
+            updateProjectMeetingsTasks(task.projectId);
+            alert('✅ Project task updated successfully!');
+        }
+
+        function editMilestone(id) {
+            const milestone = platformData.milestones.find(m => m.id === id);
+            if (!milestone) return;
+
+            const title = prompt('Milestone Title:', milestone.title);
+            if (title === null) return;
+
+            const dueDate = prompt('Due Date (YYYY-MM-DD):', milestone.dueDate || '');
+            const description = prompt('Description:', milestone.description || '');
+
+            milestone.title = title || milestone.title;
+            milestone.dueDate = dueDate !== null ? dueDate : milestone.dueDate;
+            milestone.description = description !== null ? description : milestone.description;
+
+            saveData();
+            syncAllCalendars();
+            updateProjectMilestones(milestone.projectId);
+            alert('✅ Milestone updated successfully!');
+        }
+
+        function deleteMilestone(id) {
+            if (confirm('Delete this milestone?')) {
+                const milestone = platformData.milestones.find(m => m.id === id);
+                if (milestone) {
+                    platformData.milestones = platformData.milestones.filter(m => m.id !== id);
+                    saveData();
+                    syncAllCalendars();
+                    updateProjectMilestones(milestone.projectId);
+                    updateProjectCounts(milestone.projectId);
+                    alert('✅ Milestone deleted successfully!');
+                }
+            }
+        }
+
+
+        // Initialize on page load
+        window.addEventListener('load', init);
+        /* ========================================
    POWER AUTOMATE SYNC INTEGRATION - FIXED VERSION
    Add this code to your Riley Platform HTML
    
