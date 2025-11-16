@@ -4864,6 +4864,449 @@ const SharePointAPI = {
 
         // Initialize on page load
         window.addEventListener('load', init);
+        /* ========================================
+   POWER AUTOMATE SYNC INTEGRATION
+   Add this code to your Riley Platform HTML
+   ======================================== */
+
+// STEP 1: Add this configuration object near the top of your <script> section
+// (After platformData declaration)
+
+const powerAutomateConfig = {
+    pushURL: localStorage.getItem('pa_push_url') || '',
+    pullURL: localStorage.getItem('pa_pull_url') || '',
+    lastSync: localStorage.getItem('pa_last_sync') || null,
+    autoSync: false
+};
+
+// STEP 2: Add these sync functions
+
+/**
+ * Push data to SharePoint via Power Automate
+ */
+async function syncToSharePoint() {
+    if (!powerAutomateConfig.pushURL) {
+        alert('⚠️ Please configure Power Automate webhook URL first!\n\nGo to Settings > Power Automate Configuration');
+        return;
+    }
+
+    const syncButton = document.getElementById('btnSyncToSharePoint');
+    const originalText = syncButton ? syncButton.innerHTML : '';
+    
+    try {
+        if (syncButton) {
+            syncButton.disabled = true;
+            syncButton.innerHTML = '🔄 Syncing...';
+        }
+
+        // Show progress
+        showNotification('Info', 'Starting sync to SharePoint...', 'info');
+
+        // Get all data types to sync
+        const dataTypes = [
+            'projects', 'irb', 'grants', 'team', 'milestones',
+            'meetings', 'tasks', 'projectDocuments', 'projectTasks',
+            'conferences'
+        ];
+
+        let successCount = 0;
+        let failCount = 0;
+
+        // Sync each data type
+        for (const dataType of dataTypes) {
+            const data = platformData[dataType] || [];
+            
+            if (data.length === 0) continue; // Skip empty
+
+            try {
+                const response = await fetch(powerAutomateConfig.pushURL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        dataType: dataType,
+                        action: 'sync',
+                        data: data
+                    })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Synced ${dataType}:`, result);
+                    successCount++;
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                console.error(`❌ Failed to sync ${dataType}:`, error);
+                failCount++;
+            }
+
+            // Small delay between requests
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        // Update last sync time
+        const now = new Date().toISOString();
+        powerAutomateConfig.lastSync = now;
+        localStorage.setItem('pa_last_sync', now);
+        updateSyncStatus();
+
+        // Show result
+        if (failCount === 0) {
+            showNotification('Success', `✅ Successfully synced ${successCount} data types to SharePoint!`, 'success');
+        } else {
+            showNotification('Warning', `⚠️ Synced ${successCount} data types, but ${failCount} failed. Check console for details.`, 'warning');
+        }
+
+    } catch (error) {
+        console.error('Sync error:', error);
+        showNotification('Error', 'Failed to sync to SharePoint. Check console for details.', 'error');
+    } finally {
+        if (syncButton) {
+            syncButton.disabled = false;
+            syncButton.innerHTML = originalText;
+        }
+    }
+}
+
+/**
+ * Pull data from SharePoint via Power Automate
+ */
+async function pullFromSharePoint() {
+    if (!powerAutomateConfig.pullURL) {
+        alert('⚠️ Please configure Power Automate webhook URL first!\n\nGo to Settings > Power Automate Configuration');
+        return;
+    }
+
+    const confirmed = confirm(
+        '⚠️ Pull from SharePoint?\n\n' +
+        'This will:\n' +
+        '• Download all data from SharePoint lists\n' +
+        '• MERGE with your local data (no data loss)\n' +
+        '• SharePoint items will be added/updated\n\n' +
+        'Continue?'
+    );
+
+    if (!confirmed) return;
+
+    const pullButton = document.getElementById('btnPullFromSharePoint');
+    const originalText = pullButton ? pullButton.innerHTML : '';
+
+    try {
+        if (pullButton) {
+            pullButton.disabled = true;
+            pullButton.innerHTML = '⬇️ Pulling...';
+        }
+
+        showNotification('Info', 'Downloading data from SharePoint...', 'info');
+
+        const response = await fetch(powerAutomateConfig.pullURL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                dataTypes: 'all',
+                lastSync: powerAutomateConfig.lastSync
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        
+        if (!result.success) {
+            throw new Error(result.error || 'Unknown error from Power Automate');
+        }
+
+        // Merge SharePoint data with local data
+        let totalImported = 0;
+
+        const dataTypes = {
+            projects: 'title',
+            irb: 'protocolNumber',
+            grants: 'name',
+            team: 'name',
+            milestones: 'id',
+            meetings: 'id',
+            tasks: 'id',
+            projectDocuments: 'id',
+            projectTasks: 'id',
+            conferences: 'name'
+        };
+
+        for (const [dataType, idField] of Object.entries(dataTypes)) {
+            const spData = result.data[dataType] || [];
+            
+            if (!Array.isArray(spData)) continue;
+
+            // Convert SharePoint items to platform format
+            const normalizedData = spData.map(item => normalizeSharePointItem(item, dataType));
+
+            // Merge with existing data
+            normalizedData.forEach(spItem => {
+                const existingIndex = platformData[dataType].findIndex(
+                    local => local[idField] === spItem[idField]
+                );
+
+                if (existingIndex >= 0) {
+                    // Update existing
+                    platformData[dataType][existingIndex] = { ...platformData[dataType][existingIndex], ...spItem };
+                } else {
+                    // Add new
+                    platformData[dataType].push(spItem);
+                }
+                totalImported++;
+            });
+        }
+
+        // Save merged data
+        saveData();
+        
+        // Update last sync time
+        const now = new Date().toISOString();
+        powerAutomateConfig.lastSync = now;
+        localStorage.setItem('pa_last_sync', now);
+        updateSyncStatus();
+
+        // Refresh all views
+        updateDashboard();
+        renderProjects();
+        renderIRB();
+        renderGrants();
+        renderTeam();
+
+        showNotification('Success', `✅ Successfully imported ${totalImported} items from SharePoint!`, 'success');
+
+    } catch (error) {
+        console.error('Pull error:', error);
+        showNotification('Error', `Failed to pull from SharePoint: ${error.message}`, 'error');
+    } finally {
+        if (pullButton) {
+            pullButton.disabled = false;
+            pullButton.innerHTML = originalText;
+        }
+    }
+}
+
+/**
+ * Normalize SharePoint item to platform format
+ */
+function normalizeSharePointItem(spItem, dataType) {
+    const normalized = {
+        id: spItem.id || spItem.ID || `SP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    };
+
+    // Copy all fields, converting SharePoint names to platform names
+    for (const key in spItem) {
+        if (key.startsWith('__') || key === 'ID' || key === 'Id') continue;
+        
+        // Convert field names (e.g., ProjectTitle -> projectTitle)
+        const normalizedKey = key.charAt(0).toLowerCase() + key.slice(1);
+        normalized[normalizedKey] = spItem[key];
+    }
+
+    // Special mappings for each data type
+    if (dataType === 'projects') {
+        normalized.title = spItem.Title;
+        normalized.pi = spItem.PI;
+        normalized.type = spItem.Type;
+        normalized.status = spItem.Status;
+        normalized.startDate = spItem.StartDate;
+        normalized.endDate = spItem.EndDate;
+        normalized.description = spItem.Description;
+        normalized.funding = spItem.Funding;
+    } else if (dataType === 'irb') {
+        normalized.title = spItem.Title;
+        normalized.protocolNumber = spItem.ProtocolNumber;
+        normalized.pi = spItem.PI;
+        normalized.expirationDate = spItem.ExpirationDate;
+        normalized.status = spItem.Status;
+        normalized.studyType = spItem.StudyType;
+        normalized.notes = spItem.Notes;
+    } else if (dataType === 'grants') {
+        normalized.name = spItem.Title;
+        normalized.agency = spItem.Agency;
+        normalized.amount = spItem.Amount;
+        normalized.deadline = spItem.Deadline;
+        normalized.status = spItem.Status;
+        normalized.pi = spItem.PI;
+        normalized.notes = spItem.Notes;
+    } else if (dataType === 'team') {
+        normalized.name = spItem.Title;
+        normalized.role = spItem.Role;
+        normalized.email = spItem.Email;
+        normalized.department = spItem.Department;
+        normalized.phone = spItem.Phone;
+        normalized.startDate = spItem.StartDate;
+    }
+    // Add more mappings as needed...
+
+    return normalized;
+}
+
+/**
+ * Save Power Automate configuration
+ */
+function savePowerAutomateConfig() {
+    const pushURL = document.getElementById('paPushURL').value.trim();
+    const pullURL = document.getElementById('paPullURL').value.trim();
+
+    if (pushURL) {
+        powerAutomateConfig.pushURL = pushURL;
+        localStorage.setItem('pa_push_url', pushURL);
+    }
+
+    if (pullURL) {
+        powerAutomateConfig.pullURL = pullURL;
+        localStorage.setItem('pa_pull_url', pullURL);
+    }
+
+    updateSyncStatus();
+    showNotification('Success', 'Power Automate configuration saved!', 'success');
+}
+
+/**
+ * Update sync status display
+ */
+function updateSyncStatus() {
+    const statusEl = document.getElementById('paConfigStatus');
+    if (!statusEl) return;
+
+    const pushConfigured = !!powerAutomateConfig.pushURL;
+    const pullConfigured = !!powerAutomateConfig.pullURL;
+    const lastSync = powerAutomateConfig.lastSync;
+
+    let status = '';
+
+    if (pushConfigured && pullConfigured) {
+        status = '<span style="color: #28a745;">✅ Fully Configured</span>';
+    } else if (pushConfigured || pullConfigured) {
+        status = '<span style="color: #ffc107;">⚠️ Partially Configured</span>';
+    } else {
+        status = '<span style="color: #dc3545;">❌ Not Configured</span>';
+    }
+
+    if (lastSync) {
+        const lastSyncDate = new Date(lastSync);
+        status += `<br><small>Last sync: ${lastSyncDate.toLocaleString()}</small>`;
+    }
+
+    statusEl.innerHTML = status;
+
+    // Enable/disable sync buttons
+    const pushBtn = document.getElementById('btnSyncToSharePoint');
+    const pullBtn = document.getElementById('btnPullFromSharePoint');
+    
+    if (pushBtn) pushBtn.disabled = !pushConfigured;
+    if (pullBtn) pullBtn.disabled = !pullConfigured;
+}
+
+
+// STEP 3: Add this HTML to your Settings panel
+// Find the Settings panel section and add this:
+
+const powerAutomateHTML = `
+<div style="background: #f8f9fa; padding: 20px; border-radius: 12px; margin-bottom: 20px;">
+    <h3>🔄 Power Automate Integration</h3>
+    <p>Sync your platform data with SharePoint lists using Power Automate webhooks.</p>
+    
+    <div id="paConfigStatus" style="margin: 15px 0; padding: 10px; background: white; border-radius: 8px;">
+        <span style="color: #dc3545;">❌ Not Configured</span>
+    </div>
+
+    <div style="display: grid; gap: 15px; margin-bottom: 20px;">
+        <div class="form-group">
+            <label><strong>Push to SharePoint Webhook URL:</strong></label>
+            <input 
+                type="text" 
+                id="paPushURL" 
+                placeholder="https://prod-XX.eastus.logic.azure.com:443/workflows/..."
+                value="${powerAutomateConfig.pushURL}"
+                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;"
+            >
+            <small style="color: #666;">Webhook URL from your "Push to SharePoint" Power Automate flow</small>
+        </div>
+
+        <div class="form-group">
+            <label><strong>Pull from SharePoint Webhook URL:</strong></label>
+            <input 
+                type="text" 
+                id="paPullURL" 
+                placeholder="https://prod-XX.eastus.logic.azure.com:443/workflows/..."
+                value="${powerAutomateConfig.pullURL}"
+                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;"
+            >
+            <small style="color: #666;">Webhook URL from your "Pull from SharePoint" Power Automate flow</small>
+        </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="savePowerAutomateConfig()">
+        💾 Save Configuration
+    </button>
+
+    <hr style="margin: 20px 0;">
+
+    <h4>Sync Actions</h4>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
+        <button 
+            id="btnSyncToSharePoint" 
+            class="btn btn-success" 
+            onclick="syncToSharePoint()"
+            disabled
+        >
+            🔄 Sync to SharePoint
+        </button>
+
+        <button 
+            id="btnPullFromSharePoint" 
+            class="btn btn-primary" 
+            onclick="pullFromSharePoint()"
+            disabled
+        >
+            ⬇️ Pull from SharePoint
+        </button>
+    </div>
+
+    <div style="margin-top: 15px; padding: 12px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+        <strong>💡 How it works:</strong>
+        <ul style="margin: 10px 0; padding-left: 20px;">
+            <li><strong>Sync to SharePoint:</strong> Pushes your local data to SharePoint lists</li>
+            <li><strong>Pull from SharePoint:</strong> Downloads and merges SharePoint data with local data</li>
+            <li>Your local data is never deleted - sync operations only add or update</li>
+            <li>Recommended: Sync to SharePoint at end of day, Pull from SharePoint at start of day</li>
+        </ul>
+    </div>
+</div>
+`;
+
+// STEP 4: Initialize on page load
+// Add this to your init() function or at the end of your script:
+
+window.addEventListener('load', function() {
+    // Update sync status on load
+    updateSyncStatus();
+    
+    // Add Power Automate section to Settings panel if not already there
+    const settingsPanel = document.getElementById('settings');
+    if (settingsPanel && !document.getElementById('paConfigStatus')) {
+        // Insert Power Automate section before Data Management section
+        const dataManagement = settingsPanel.querySelector('h3');
+        if (dataManagement) {
+            const paSection = document.createElement('div');
+            paSection.innerHTML = powerAutomateHTML;
+            dataManagement.parentElement.insertBefore(paSection, dataManagement.parentElement.firstChild);
+        }
+    }
+});
+
+/* ========================================
+   END OF POWER AUTOMATE INTEGRATION
+   ======================================== */
     </script>
 </body>
 </html>
